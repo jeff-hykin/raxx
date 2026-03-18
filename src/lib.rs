@@ -92,7 +92,7 @@ mod pipeline;
 mod result;
 mod tail;
 
-pub use cmd::Cmd;
+pub use cmd::{Cmd, TimeoutConfig};
 pub use error::{CmdError, Result};
 pub use glob_util::glob;
 pub use pipeline::Pipeline;
@@ -174,10 +174,9 @@ impl<T: AsRef<std::ffi::OsStr>, const N: usize> IntoArgs for &[T; N] {
 
 /// Create a command with safe argument handling.
 ///
-/// The first argument is a string that is split on whitespace into the program
-/// name and any literal arguments. Additional arguments are appended as-is —
-/// they are **not** interpreted by a shell, so spaces, quotes, globs, and
-/// special characters are passed through safely.
+/// The first argument is the program name. Additional arguments are appended
+/// as-is — they are **not** interpreted by a shell, so spaces, quotes, globs,
+/// and special characters are passed through safely.
 ///
 /// Vectors and slices are flattened — each element becomes a separate argument.
 ///
@@ -189,9 +188,6 @@ impl<T: AsRef<std::ffi::OsStr>, const N: usize> IntoArgs for &[T; N] {
 /// # fn main() -> raxx::Result<()> {
 /// // Simple command
 /// cmd!("echo", "hello").run()?;
-///
-/// // First arg is split on whitespace for convenience
-/// cmd!("grep -rn", "pattern", "src/").run()?;
 ///
 /// // Variables with spaces are safe
 /// let name = "hello world";
@@ -207,55 +203,56 @@ impl<T: AsRef<std::ffi::OsStr>, const N: usize> IntoArgs for &[T; N] {
 #[macro_export]
 macro_rules! cmd {
     ($cmd:expr $(, $arg:expr)* $(,)?) => {
-        $crate::Cmd::parse($cmd)$(.push_args($arg))*
+        $crate::Cmd::new($cmd)$(.push_args($arg))*
     };
 }
 
 /// Create a shell command via `/bin/sh -c`.
 ///
-/// The first argument is the base shell command string. Additional arguments
-/// are shell-escaped and appended, making it safe to pass variables and
-/// vectors without injection risk.
+/// The first argument is the base shell command string. It supports three modes:
 ///
-/// Vectors and slices are flattened — each element is escaped and appended
-/// as a separate shell argument.
-///
-/// # Examples
-///
+/// **1. Interpolation mode** — named `{var}` placeholders are auto-escaped:
 /// ```no_run
 /// use raxx::shell;
-///
 /// # fn main() -> raxx::Result<()> {
-/// // Simple shell command
-/// let text = shell!("echo hello | tr a-z A-Z").text()?;
-/// assert_eq!(text, "HELLO");
-///
-/// // Extra args are escaped and appended
-/// let pattern = "hello world";
-/// shell!("grep", pattern, "file.txt").run()?;
-/// // Executes: /bin/sh -c "grep 'hello world' file.txt"
-///
-/// // Vectors are flattened, each element escaped
-/// let flags = vec!["--verbose", "--color=always"];
-/// shell!("ls", flags).run()?;
-/// // Executes: /bin/sh -c "ls --verbose --color=always"
+/// let name = "hello world";
+/// let text = shell!("echo {name} | tr a-z A-Z").text()?;
+/// // Executes: /bin/sh -c "echo 'hello world' | tr a-z A-Z"
 /// # Ok(())
 /// # }
 /// ```
 ///
+/// **2. Append mode** — extra args are escaped and appended:
+/// ```no_run
+/// use raxx::shell;
+/// # fn main() -> raxx::Result<()> {
+/// let pattern = "hello world";
+/// shell!("grep", pattern, "file.txt").run()?;
+/// // Executes: /bin/sh -c "grep 'hello world' file.txt"
+/// # Ok(())
+/// # }
+/// ```
+///
+/// **3. Plain mode** — no placeholders, no extra args:
+/// ```no_run
+/// use raxx::shell;
+/// # fn main() -> raxx::Result<()> {
+/// let text = shell!("echo hello | tr a-z A-Z").text()?;
+/// assert_eq!(text, "HELLO");
+/// # Ok(())
+/// # }
+/// ```
+///
+/// Vectors and slices are flattened — each element is escaped and appended
+/// as a separate shell argument.
+///
 /// # Security
 ///
-/// The base command string (first argument) is passed to the shell as-is.
-/// **Do not** interpolate untrusted input into it. Additional arguments
-/// (after the first) are safely escaped via [`escape_arg`].
-#[macro_export]
-macro_rules! shell {
-    ($cmd:expr $(, $arg:expr)* $(,)?) => {{
-        let mut __raxx_cmd = String::from($cmd);
-        $($crate::_append_shell_args(&mut __raxx_cmd, $arg);)*
-        $crate::Cmd::shell(&__raxx_cmd)
-    }};
-}
+/// Named placeholders (`{var}`) and extra arguments are automatically escaped.
+/// The base command string (first argument, outside of placeholders) is passed
+/// to the shell as-is. **Do not** interpolate untrusted input into the literal
+/// parts of the format string.
+pub use raxx_macros::shell;
 
 /// Internal helper for `shell!` macro — appends escaped arguments to a shell
 /// command string. Not intended for direct use.
@@ -264,6 +261,81 @@ pub fn _append_shell_args<A: IntoArgs>(cmd: &mut String, args: A) {
     for arg in args.into_args() {
         cmd.push(' ');
         cmd.push_str(&escape_arg(&arg));
+    }
+}
+
+/// Trait for escaping values for shell interpolation in `shell!` format strings.
+///
+/// Scalars are escaped as a single argument. Vectors/slices have each element
+/// escaped individually and joined with spaces.
+#[doc(hidden)]
+pub trait EscapeForShell {
+    fn escape_for_shell(&self) -> String;
+}
+
+impl EscapeForShell for &str {
+    fn escape_for_shell(&self) -> String {
+        escape_arg(self)
+    }
+}
+
+impl EscapeForShell for String {
+    fn escape_for_shell(&self) -> String {
+        escape_arg(self)
+    }
+}
+
+impl EscapeForShell for &String {
+    fn escape_for_shell(&self) -> String {
+        escape_arg(self)
+    }
+}
+
+impl EscapeForShell for std::path::PathBuf {
+    fn escape_for_shell(&self) -> String {
+        escape_arg(&self.to_string_lossy())
+    }
+}
+
+impl EscapeForShell for &std::path::Path {
+    fn escape_for_shell(&self) -> String {
+        escape_arg(&self.to_string_lossy())
+    }
+}
+
+impl<T: AsRef<std::ffi::OsStr>> EscapeForShell for Vec<T> {
+    fn escape_for_shell(&self) -> String {
+        self.iter()
+            .map(|s| escape_arg(&s.as_ref().to_string_lossy()))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+impl<T: AsRef<std::ffi::OsStr>> EscapeForShell for &[T] {
+    fn escape_for_shell(&self) -> String {
+        self.iter()
+            .map(|s| escape_arg(&s.as_ref().to_string_lossy()))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+impl<T: AsRef<std::ffi::OsStr>, const N: usize> EscapeForShell for [T; N] {
+    fn escape_for_shell(&self) -> String {
+        self.iter()
+            .map(|s| escape_arg(&s.as_ref().to_string_lossy()))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+impl<T: AsRef<std::ffi::OsStr>, const N: usize> EscapeForShell for &[T; N] {
+    fn escape_for_shell(&self) -> String {
+        self.iter()
+            .map(|s| escape_arg(&s.as_ref().to_string_lossy()))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 

@@ -221,8 +221,8 @@ fn test_args_mixed() {
 }
 
 #[test]
-fn test_cmd_parse_splits_whitespace() {
-    let text = cmd!("echo hello world").text().unwrap();
+fn test_cmd_first_arg_is_program() {
+    let text = cmd!("echo", "hello", "world").text().unwrap();
     assert_eq!(text, "hello world");
 }
 
@@ -926,6 +926,28 @@ fn test_timeout_does_not_expire() {
         .timeout(Duration::from_secs(10))
         .run()
         .unwrap();
+}
+
+#[test]
+fn test_timeout_signal_sigkill() {
+    let result = cmd!("sleep", "10")
+        .timeout_signal(Duration::from_millis(100), libc::SIGKILL, None)
+        .run();
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), CmdError::Timeout { .. }));
+}
+
+#[test]
+fn test_timeout_signal_with_grace_period() {
+    let result = cmd!("sleep", "10")
+        .timeout_signal(
+            Duration::from_millis(100),
+            libc::SIGTERM,
+            Some(Duration::from_millis(200)),
+        )
+        .run();
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), CmdError::Timeout { .. }));
 }
 
 // ============================================================================
@@ -2105,4 +2127,124 @@ fn test_run_with_tail_long_lines() {
     cmd!("echo", &long)
         .run_with_tail("Long...", "Done", 3)
         .unwrap();
+}
+
+// ============================================================================
+// Shell interpolation with escaping
+// ============================================================================
+
+#[test]
+fn test_shell_interpolation_basic() {
+    let name = "hello";
+    let text = shell!("echo {name}").text().unwrap();
+    assert_eq!(text, "hello");
+}
+
+#[test]
+fn test_shell_interpolation_with_spaces() {
+    let name = "hello world";
+    let text = shell!("echo {name}").text().unwrap();
+    assert_eq!(text, "hello world");
+}
+
+#[test]
+fn test_shell_interpolation_with_pipe() {
+    let name = "hello";
+    let text = shell!("echo {name} | tr a-z A-Z").text().unwrap();
+    assert_eq!(text, "HELLO");
+}
+
+#[test]
+fn test_shell_interpolation_multiple_vars() {
+    let a = "hello";
+    let b = "world";
+    let text = shell!("echo {a} {b}").text().unwrap();
+    assert_eq!(text, "hello world");
+}
+
+#[test]
+fn test_shell_interpolation_prevents_injection() {
+    // Special shell characters should be escaped
+    let name = "hello; rm -rf /";
+    let text = shell!("echo {name}").text().unwrap();
+    assert_eq!(text, "hello; rm -rf /");
+}
+
+#[test]
+fn test_shell_interpolation_with_single_quotes() {
+    let name = "it's";
+    let text = shell!("echo {name}").text().unwrap();
+    assert_eq!(text, "it's");
+}
+
+#[test]
+fn test_shell_interpolation_with_dollar_sign() {
+    let val = "$HOME";
+    let text = shell!("echo {val}").text().unwrap();
+    assert_eq!(text, "$HOME");
+}
+
+#[test]
+fn test_shell_interpolation_empty_string() {
+    let name = "";
+    let text = shell!("echo {name}end").text().unwrap();
+    assert_eq!(text, "end");
+}
+
+#[test]
+fn test_shell_interpolation_same_var_twice() {
+    let x = "hi";
+    let text = shell!("echo {x} {x}").text().unwrap();
+    assert_eq!(text, "hi hi");
+}
+
+#[test]
+fn test_shell_interpolation_coexists_with_shell_vars() {
+    // Shell $VAR syntax should still work alongside {var} interpolation
+    let greeting = "hello";
+    let text = shell!("X=world; echo {greeting} $X").text().unwrap();
+    assert_eq!(text, "hello world");
+}
+
+#[test]
+fn test_shell_interpolation_with_shell_brace_var() {
+    // ${VAR} shell syntax should NOT be treated as interpolation
+    let text = shell!("X=hello; echo ${X}").text().unwrap();
+    assert_eq!(text, "hello");
+}
+
+#[test]
+fn test_shell_interpolation_with_shell_default_var() {
+    // ${VAR:-default} shell syntax should still work
+    let text = shell!("echo ${NONEXISTENT:-fallback}").text().unwrap();
+    assert_eq!(text, "fallback");
+}
+
+#[test]
+fn test_shell_interpolation_vec() {
+    let files = vec!["file one.txt", "file two.txt"];
+    let text = shell!("echo {files}").text().unwrap();
+    assert_eq!(text, "file one.txt file two.txt");
+}
+
+#[test]
+fn test_shell_interpolation_vec_with_special_chars() {
+    let args = vec!["hello world", "it's", "a;b"];
+    let text = shell!("echo {args}").text().unwrap();
+    assert_eq!(text, "hello world it's a;b");
+}
+
+#[test]
+fn test_shell_interpolation_vec_single_element() {
+    let items = vec!["only"];
+    let text = shell!("echo {items}").text().unwrap();
+    assert_eq!(text, "only");
+}
+
+#[test]
+fn test_shell_interpolation_mixed_scalar_and_vec() {
+    let prefix = "start";
+    let items = vec!["a", "b", "c"];
+    let text = shell!("echo {prefix} {items}").text().unwrap();
+    assert_eq!(text, "start a b c");
 }

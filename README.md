@@ -13,18 +13,39 @@ raxx = "0.1"
 
 ```rust
 use raxx::{cmd, shell};
+use std::time::Duration;
 
 fn main() -> raxx::Result<()> {
-    // Run a simple command
-    cmd!("echo", "hello world").run()?;
+    // Interpolation with auto-escaping — safe even with spaces/quotes/semicolons
+    let name = "world'n";
+    let text = shell!("echo hello {name} | tr a-z A-Z").text()?;
+    assert_eq!(text, "HELLO WORLD");
 
-    // Capture output as a string
-    let text = cmd!("echo", "hello").text()?;
-    assert_eq!(text, "hello");
+    // Vectors interpolate too — each element escaped, joined with spaces
+    let files = vec!["file one.txt", "file two.txt"];
+    shell!("cat {files} | wc -l").run()?;
 
-    // Use shell syntax for pipes and redirects
-    let text = shell!("echo hello | tr a-z A-Z").text()?;
-    assert_eq!(text, "HELLO");
+    // Forward a slice of argv into a command, with fallback on failure
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let text = shell!("grep -r {args} src/")
+        .or(cmd!("echo", "no matches"))
+        .pipe(cmd!("head", "-5"))
+        .text()?;
+
+    // Check success without throwing
+    let output = cmd!("cargo", "test").no_throw().output()?;
+    if output.success() {
+        println!("all tests passed");
+    }
+
+    // Spinner with live tail of last 5 stdout lines
+    cmd!("cargo", "build")
+        .run_with_tail("Building...", "Build complete", 5)?;
+
+    // Timeout: sends SIGTERM, then SIGKILL after 5s grace period
+    cmd!("sleep", "60")
+        .timeout(Duration::from_secs(10))
+        .run()?;
 
     Ok(())
 }
@@ -34,7 +55,7 @@ fn main() -> raxx::Result<()> {
 
 ### `cmd!` — Safe commands
 
-The `cmd!` macro builds a command **without** invoking a shell. The first argument is split on whitespace into the program and literal arguments. Additional arguments are appended as-is — no shell interpretation, no glob expansion, no variable substitution. This makes it safe for user-provided input.
+The `cmd!` macro builds a command **without** invoking a shell. The first argument is the program name. Additional arguments are appended as-is — no shell interpretation, no glob expansion, no variable substitution. This makes it safe for user-provided input.
 
 ```rust
 use raxx::cmd;
@@ -42,8 +63,8 @@ use raxx::cmd;
 // Simple
 cmd!("echo", "hello").run()?;
 
-// First arg is split on whitespace
-cmd!("grep -rn", "pattern", "src/").run()?;
+// Each argument is separate
+cmd!("grep", "-rn", "pattern", "src/").run()?;
 
 // Variables are safe — spaces, quotes, globs are passed literally
 let user_input = "Robert'); DROP TABLE students;--";
@@ -61,6 +82,44 @@ shell!("echo hello | tr a-z A-Z").run()?;
 shell!("for i in 1 2 3; do echo $i; done").run()?;
 shell!("VAR=hello && echo $VAR").run()?;
 ```
+
+## Shell Interpolation with Escaping
+
+The `shell!` macro supports argument interpolation as `{variable}` — variables are automatically
+shell-escaped before insertion, preventing injection attacks:
+
+```rust
+use raxx::shell;
+
+let name = "hello world";
+let text = shell!("echo {name} | tr a-z A-Z").text()?;
+assert_eq!(text, "HELLO WORLD");
+// Executes: /bin/sh -c "echo 'hello world' | tr a-z A-Z"
+
+// Multiple variables
+let src = "my file.txt";
+let dst = "/tmp/backup";
+shell!("cp {src} {dst}").run()?;
+
+// Injection-safe: special characters are escaped
+let user_input = "hello; rm -rf /";
+shell!("echo {user_input}").run()?;
+// Executes: /bin/sh -c "echo 'hello; rm -rf /'"
+// (the semicolon is safely quoted, not executed)
+
+// Vectors are escaped element-by-element and joined with spaces
+let files = vec!["my file.txt", "other file.txt"];
+shell!("cat {files} | wc -l").run()?;
+// Executes: /bin/sh -c "cat 'my file.txt' 'other file.txt' | wc -l"
+
+// Shell $VAR syntax still works alongside {var} interpolation
+let greeting = "hello";
+shell!("X=world; echo {greeting} $X").run()?;
+// prints: hello world
+```
+
+The literal parts of the format string (outside `{var}` placeholders) are passed
+to the shell as-is, so pipes, redirects, and shell features work normally.
 
 ## Vector Arguments
 
@@ -352,13 +411,33 @@ match cmd!("nonexistent_program").run() {
 
 ## Timeout
 
+By default, `.timeout()` sends SIGTERM first, then SIGKILL after a 2-second grace period:
+
 ```rust
 use raxx::cmd;
 use std::time::Duration;
 
+// SIGTERM after 2s, SIGKILL 2s later if still alive
 cmd!("sleep", "100")
     .timeout(Duration::from_secs(2))
     .run()?; // returns CmdError::Timeout
+```
+
+For full control, use `.timeout_signal()` to choose the signal and grace period:
+
+```rust
+use raxx::cmd;
+use std::time::Duration;
+
+// Send SIGINT after 10s, then SIGKILL after 5s grace period
+cmd!("my-server")
+    .timeout_signal(Duration::from_secs(10), libc::SIGINT, Some(Duration::from_secs(5)))
+    .run()?;
+
+// Immediate SIGKILL with no grace period
+cmd!("runaway-process")
+    .timeout_signal(Duration::from_secs(2), libc::SIGKILL, None)
+    .run()?;
 ```
 
 ## Quiet Mode
@@ -530,7 +609,8 @@ The `.output()` method returns a `CmdOutput` struct with full access to exit cod
 | | `.quiet()` | Suppress all output |
 | | `.quiet_stdout()` | Suppress stdout |
 | | `.quiet_stderr()` | Suppress stderr |
-| | `.timeout(duration)` | Kill after duration |
+| | `.timeout(duration)` | SIGTERM after duration, SIGKILL after 2s grace |
+| | `.timeout_signal(dur, sig, grace)` | Custom signal and grace period |
 | **Compose** | `.pipe(other)` | Pipe stdout to other's stdin |
 | | `.and(other)` | Run other only on success (`&&`) |
 | | `.or(other)` | Run other only on failure (`\|\|`) |

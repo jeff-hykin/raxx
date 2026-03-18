@@ -249,9 +249,20 @@ dependencies = [
  "console",
  "glob",
  "indicatif",
+ "libc",
+ "raxx-macros",
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "raxx-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

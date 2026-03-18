@@ -50,6 +50,18 @@ pub enum ThrowBehavior {
     NoThrowOn(Vec<i32>),
 }
 
+/// Configuration for command timeout.
+#[derive(Debug, Clone)]
+pub struct TimeoutConfig {
+    /// Total time before sending the initial signal.
+    pub duration: Duration,
+    /// Signal to send first (default: SIGTERM = 15).
+    pub signal: i32,
+    /// Grace period after the initial signal before sending SIGKILL.
+    /// If `None`, SIGKILL is sent immediately.
+    pub kill_after: Option<Duration>,
+}
+
 /// A command builder.
 ///
 /// Created via [`cmd!`](crate::cmd!), [`shell!`](crate::shell!),
@@ -85,7 +97,7 @@ pub struct Cmd {
     pub(crate) stdout: OutputConfig,
     pub(crate) stderr: OutputConfig,
     pub(crate) throw: ThrowBehavior,
-    pub(crate) timeout: Option<Duration>,
+    pub(crate) timeout: Option<TimeoutConfig>,
     pub(crate) pipeline: Option<Pipeline>,
 }
 
@@ -424,9 +436,49 @@ impl Cmd {
     }
 
     /// Set a timeout. If the command doesn't finish within the duration,
-    /// it is killed and [`CmdError::Timeout`] is returned.
+    /// it is sent SIGTERM, then SIGKILL after a 2-second grace period,
+    /// and [`CmdError::Timeout`] is returned.
+    ///
+    /// ```no_run
+    /// # use raxx::cmd;
+    /// use std::time::Duration;
+    /// cmd!("sleep", "60").timeout(Duration::from_secs(5)).run();
+    /// ```
     pub fn timeout(mut self, duration: Duration) -> Self {
-        self.timeout = Some(duration);
+        self.timeout = Some(TimeoutConfig {
+            duration,
+            signal: 15, // SIGTERM
+            kill_after: Some(Duration::from_secs(2)),
+        });
+        self
+    }
+
+    /// Set a timeout with a specific signal and optional SIGKILL grace period.
+    ///
+    /// - `signal` — the signal number to send first (e.g. `libc::SIGTERM`,
+    ///   `libc::SIGINT`, `libc::SIGKILL`).
+    /// - `kill_after` — if `Some`, a grace period before sending SIGKILL.
+    ///   If `None` (or if `signal` is already SIGKILL), no follow-up is sent.
+    ///
+    /// ```no_run
+    /// # use raxx::cmd;
+    /// use std::time::Duration;
+    /// // Send SIGINT, then SIGKILL after 5s
+    /// cmd!("sleep", "60")
+    ///     .timeout_signal(Duration::from_secs(10), libc::SIGINT, Some(Duration::from_secs(5)))
+    ///     .run();
+    /// ```
+    pub fn timeout_signal(
+        mut self,
+        duration: Duration,
+        signal: i32,
+        kill_after: Option<Duration>,
+    ) -> Self {
+        self.timeout = Some(TimeoutConfig {
+            duration,
+            signal,
+            kill_after,
+        });
         self
     }
 
@@ -695,16 +747,42 @@ impl Cmd {
         }
 
         // Wait with optional timeout
-        let status = if let Some(duration) = self.timeout {
+        let status = if let Some(ref tc) = self.timeout {
             let start = std::time::Instant::now();
+            let mut signal_sent = false;
+            let duration = tc.duration;
+            let signal = tc.signal;
+            let kill_after = tc.kill_after;
             loop {
                 match child.try_wait() {
-                    Ok(Some(status)) => break Ok(status),
-                    Ok(None) => {
-                        if start.elapsed() >= duration {
-                            let _ = child.kill();
-                            let _ = child.wait();
+                    Ok(Some(status)) => {
+                        if signal_sent {
+                            // Process exited after we sent a timeout signal
                             return Err(CmdError::Timeout { duration });
+                        }
+                        break Ok(status);
+                    }
+                    Ok(None) => {
+                        let elapsed = start.elapsed();
+                        if !signal_sent && elapsed >= duration {
+                            // Send the configured signal
+                            unsafe {
+                                libc::kill(child.id() as libc::pid_t, signal);
+                            }
+                            signal_sent = true;
+                            // If signal is SIGKILL or no grace period, wait and return
+                            if signal == libc::SIGKILL || kill_after.is_none() {
+                                let _ = child.wait();
+                                return Err(CmdError::Timeout { duration });
+                            }
+                        } else if signal_sent {
+                            if let Some(grace) = kill_after {
+                                if elapsed >= duration + grace {
+                                    let _ = child.kill(); // SIGKILL
+                                    let _ = child.wait();
+                                    return Err(CmdError::Timeout { duration });
+                                }
+                            }
                         }
                         std::thread::sleep(Duration::from_millis(10));
                     }
