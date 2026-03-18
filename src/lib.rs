@@ -90,12 +90,14 @@ mod error;
 mod glob_util;
 mod pipeline;
 mod result;
+mod tail;
 
 pub use cmd::Cmd;
 pub use error::{CmdError, Result};
 pub use glob_util::glob;
 pub use pipeline::Pipeline;
 pub use result::CmdOutput;
+pub use tail::TailOptions;
 
 /// Trait for types that can be used as arguments in [`cmd!`] and [`shell!`].
 ///

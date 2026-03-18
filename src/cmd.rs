@@ -75,18 +75,18 @@ pub enum ThrowBehavior {
 /// ```
 #[derive(Debug, Clone)]
 pub struct Cmd {
-    program: String,
-    args: Vec<String>,
-    env_vars: HashMap<String, String>,
-    env_remove: Vec<String>,
-    env_clear: bool,
-    cwd: Option<PathBuf>,
-    stdin: StdinConfig,
-    stdout: OutputConfig,
-    stderr: OutputConfig,
-    throw: ThrowBehavior,
-    timeout: Option<Duration>,
-    pipeline: Option<Pipeline>,
+    pub(crate) program: String,
+    pub(crate) args: Vec<String>,
+    pub(crate) env_vars: HashMap<String, String>,
+    pub(crate) env_remove: Vec<String>,
+    pub(crate) env_clear: bool,
+    pub(crate) cwd: Option<PathBuf>,
+    pub(crate) stdin: StdinConfig,
+    pub(crate) stdout: OutputConfig,
+    pub(crate) stderr: OutputConfig,
+    pub(crate) throw: ThrowBehavior,
+    pub(crate) timeout: Option<Duration>,
+    pub(crate) pipeline: Option<Pipeline>,
 }
 
 impl Cmd {

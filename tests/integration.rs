@@ -1,4 +1,4 @@
-use raxx::{cmd, glob, shell, Cmd, CmdError};
+use raxx::{cmd, glob, shell, Cmd, CmdError, TailOptions};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -1953,4 +1953,156 @@ fn test_push_args_slice() {
     let args: &[&str] = &["a", "b", "c"];
     let text = Cmd::new("echo").push_args(args).text().unwrap();
     assert_eq!(text, "a b c");
+}
+
+// ============================================================================
+// run_with_tail
+// ============================================================================
+
+#[test]
+fn test_run_with_tail_success() {
+    // A fast command that produces a few lines
+    shell!("echo line1; echo line2; echo line3")
+        .run_with_tail("Running...", "Done", 3)
+        .unwrap();
+}
+
+#[test]
+fn test_run_with_tail_failure() {
+    let result = shell!("echo output; exit 1")
+        .run_with_tail("Running...", "Done", 3);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        CmdError::ExitStatus { code, .. } => assert_eq!(code, 1),
+        other => panic!("Expected ExitStatus, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_run_with_tail_many_lines() {
+    // Verify it handles lots of output without issues
+    shell!("seq 1 100")
+        .run_with_tail("Counting...", "Counted to 100", 5)
+        .unwrap();
+}
+
+#[test]
+fn test_run_with_tail_no_output() {
+    cmd!("true")
+        .run_with_tail("Waiting...", "Done", 3)
+        .unwrap();
+}
+
+#[test]
+fn test_run_with_tail_with_env() {
+    shell!("echo $MY_VAR")
+        .env("MY_VAR", "tail_test")
+        .run_with_tail("Env test...", "Env done", 3)
+        .unwrap();
+}
+
+#[test]
+fn test_run_with_tail_with_cwd() {
+    let dir = temp_dir();
+    cmd!("pwd")
+        .cwd(dir.path())
+        .run_with_tail("Cwd test...", "Cwd done", 3)
+        .unwrap();
+}
+
+#[test]
+fn test_run_with_tail_with_stdin() {
+    cmd!("cat")
+        .stdin_text("hello from stdin")
+        .run_with_tail("Stdin test...", "Stdin done", 3)
+        .unwrap();
+}
+
+#[test]
+fn test_run_with_tail_stderr_in_error() {
+    let result = shell!("echo err_msg >&2; exit 1")
+        .run_with_tail("Running...", "Done", 3);
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    let msg = format!("{}", err);
+    assert!(msg.contains("err_msg") || matches!(err, CmdError::ExitStatus { code: 1, .. }));
+}
+
+#[test]
+fn test_run_with_tail_not_found() {
+    let result = cmd!("nonexistent_command_xyz_99999")
+        .run_with_tail("Looking...", "Found", 3);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        CmdError::NotFound { program } => {
+            assert_eq!(program, "nonexistent_command_xyz_99999");
+        }
+        other => panic!("Expected NotFound, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_run_with_tail_cwd_not_found() {
+    let result = cmd!("ls")
+        .cwd("/nonexistent_dir_xyz_99999")
+        .run_with_tail("Looking...", "Found", 3);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        CmdError::CwdNotFound { .. } => {}
+        other => panic!("Expected CwdNotFound, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_run_with_tail_opts() {
+    shell!("echo line1; echo line2")
+        .run_with_tail_opts(
+            TailOptions::new("Custom...", "Custom done")
+                .lines(10)
+                .tick_ms(50),
+        )
+        .unwrap();
+}
+
+#[test]
+fn test_run_with_tail_opts_spinner() {
+    cmd!("echo", "test")
+        .run_with_tail_opts(
+            TailOptions::new("Spinning...", "Spun")
+                .spinner("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+                .lines(3),
+        )
+        .unwrap();
+}
+
+#[test]
+fn test_run_with_tail_zero_lines() {
+    // With 0 tail lines, just show the spinner with no output
+    shell!("echo hidden")
+        .run_with_tail("No tail...", "Done", 0)
+        .unwrap();
+}
+
+#[test]
+fn test_run_with_tail_one_line() {
+    shell!("echo only_this")
+        .run_with_tail("One line...", "Done", 1)
+        .unwrap();
+}
+
+#[test]
+fn test_run_with_tail_binary_output() {
+    // Should not crash on non-utf8 lines (they'll be lossy)
+    shell!("printf '\\x80\\x81\\ntext\\n'")
+        .run_with_tail("Binary...", "Done", 3)
+        .unwrap();
+}
+
+#[test]
+fn test_run_with_tail_long_lines() {
+    // Lines longer than terminal width should be truncated
+    let long = "a".repeat(500);
+    cmd!("echo", &long)
+        .run_with_tail("Long...", "Done", 3)
+        .unwrap();
 }

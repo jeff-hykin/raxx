@@ -373,6 +373,44 @@ cmd!("echo", "shh").quiet_stdout().run()?;     // suppress stdout only
 cmd!("echo", "shh").quiet_stderr().run()?;     // suppress stderr only
 ```
 
+## Spinner with Tail (`run_with_tail`)
+
+Run a command with a live spinner that streams the last N lines of stdout. Great for long-running builds, deploys, or tests where you want progress feedback without flooding the terminal.
+
+```rust
+use raxx::{cmd, shell, TailOptions};
+
+// Simple usage: title, done message, number of tail lines
+cmd!("cargo", "build", "--release")
+    .run_with_tail("Building...", "Build complete", 5)?;
+
+// With environment and cwd
+cmd!("make", "-j8")
+    .cwd("./project")
+    .env("CC", "clang")
+    .run_with_tail("Compiling...", "Compiled", 3)?;
+
+// Full control with TailOptions
+cmd!("cargo", "test")
+    .run_with_tail_opts(
+        TailOptions::new("Testing...", "All tests passed")
+            .lines(10)
+            .spinner("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+            .tick_ms(100),
+    )?;
+```
+
+While running, the terminal shows:
+
+```
+  ◐  Building...
+     Compiling raxx v0.1.0
+     Compiling serde v1.0.228
+     Compiling serde_json v1.0.149
+```
+
+On success, the spinner clears and prints the done message. On failure, returns `CmdError::ExitStatus` with captured stderr.
+
 ## Builder API
 
 Every method on `Cmd` consumes `self` and returns a new `Cmd`, so you can chain freely. You can also use `Cmd::new` and `Cmd::parse` directly instead of macros.
@@ -504,6 +542,8 @@ The `.output()` method returns a `CmdOutput` struct with full access to exit cod
 | | `.json::<T>()` | Parse stdout as JSON |
 | | `.status_code()` | Get exit code, never throws |
 | | `.output()` | Full `CmdOutput` |
+| | `.run_with_tail(title, done, n)` | Spinner + last N lines of stdout |
+| | `.run_with_tail_opts(opts)` | Spinner with full `TailOptions` |
 
 ## Platform
 
