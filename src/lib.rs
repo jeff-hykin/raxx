@@ -1,0 +1,297 @@
+//! # raxx
+//!
+//! A dax-inspired shell scripting library for Rust. Synchronous, Unix-only.
+//!
+//! Provides two macros for running commands:
+//!
+//! - [`cmd!`] — Builds a command without invoking a shell. Arguments are passed
+//!   directly to the process, so spaces, quotes, and special characters are safe.
+//! - [`shell!`] — Passes a string to `/bin/sh -c` for full shell syntax (pipes,
+//!   redirects, variables, loops, etc.).
+//!
+//! Both return a [`Cmd`] builder that supports piping, chaining, IO redirection,
+//! environment variables, working directory, timeouts, and more.
+//!
+//! # Quick Start
+//!
+//! ```no_run
+//! use raxx::{cmd, shell};
+//!
+//! # fn main() -> raxx::Result<()> {
+//! // Run a command
+//! cmd!("echo", "hello world").run()?;
+//!
+//! // Capture output
+//! let text = cmd!("echo", "hello").text()?;
+//! assert_eq!(text, "hello");
+//!
+//! // Shell syntax
+//! let text = shell!("echo hello | tr a-z A-Z").text()?;
+//! assert_eq!(text, "HELLO");
+//!
+//! // Piping with the builder API
+//! let text = cmd!("echo", "hello")
+//!     .pipe(cmd!("tr", "a-z", "A-Z"))
+//!     .text()?;
+//! assert_eq!(text, "HELLO");
+//!
+//! // Chaining (&&, ||, ;)
+//! let text = cmd!("false")
+//!     .or(cmd!("echo", "fallback"))
+//!     .text()?;
+//! assert_eq!(text, "fallback");
+//!
+//! // Environment and working directory
+//! let text = shell!("echo $MY_VAR")
+//!     .env("MY_VAR", "hello")
+//!     .cwd("/tmp")
+//!     .text()?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Vector Arguments
+//!
+//! Both macros accept vectors (or slices) as arguments. Each element is treated
+//! as a separate argument. For `shell!`, each element is shell-escaped.
+//!
+//! ```no_run
+//! use raxx::{cmd, shell};
+//!
+//! # fn main() -> raxx::Result<()> {
+//! let files = vec!["file1.txt", "file2.txt"];
+//! cmd!("cat", files).run()?;
+//!
+//! let flags = vec!["--verbose", "--color=always"];
+//! shell!("ls", flags).run()?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Error Handling
+//!
+//! Commands return [`CmdError`] on non-zero exit codes by default. Use
+//! [`.no_throw()`](Cmd::no_throw) or [`.status_code()`](Cmd::status_code)
+//! to suppress this.
+//!
+//! ```no_run
+//! # use raxx::cmd;
+//! # fn main() -> raxx::Result<()> {
+//! let code = cmd!("false").status_code()?; // 1, no error
+//! let output = cmd!("false").no_throw().output()?; // code=1, no error
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! See [`CmdError`] for all error variants.
+
+mod cmd;
+mod error;
+mod glob_util;
+mod pipeline;
+mod result;
+
+pub use cmd::Cmd;
+pub use error::{CmdError, Result};
+pub use glob_util::glob;
+pub use pipeline::Pipeline;
+pub use result::CmdOutput;
+
+/// Trait for types that can be used as arguments in [`cmd!`] and [`shell!`].
+///
+/// Implemented for single strings (`&str`, `String`, `&String`) and
+/// collections (`Vec<T>`, `&[T]`) where elements are string-like.
+/// Collections are flattened — each element becomes a separate argument.
+pub trait IntoArgs {
+    /// Convert into a list of argument strings.
+    fn into_args(self) -> Vec<String>;
+}
+
+impl IntoArgs for &str {
+    fn into_args(self) -> Vec<String> {
+        vec![self.to_string()]
+    }
+}
+
+impl IntoArgs for String {
+    fn into_args(self) -> Vec<String> {
+        vec![self]
+    }
+}
+
+impl IntoArgs for &String {
+    fn into_args(self) -> Vec<String> {
+        vec![self.clone()]
+    }
+}
+
+impl IntoArgs for std::path::PathBuf {
+    fn into_args(self) -> Vec<String> {
+        vec![self.to_string_lossy().to_string()]
+    }
+}
+
+impl IntoArgs for &std::path::Path {
+    fn into_args(self) -> Vec<String> {
+        vec![self.to_string_lossy().to_string()]
+    }
+}
+
+impl<T: AsRef<std::ffi::OsStr>> IntoArgs for Vec<T> {
+    fn into_args(self) -> Vec<String> {
+        self.iter()
+            .map(|s| s.as_ref().to_string_lossy().to_string())
+            .collect()
+    }
+}
+
+impl<T: AsRef<std::ffi::OsStr>> IntoArgs for &[T] {
+    fn into_args(self) -> Vec<String> {
+        self.iter()
+            .map(|s| s.as_ref().to_string_lossy().to_string())
+            .collect()
+    }
+}
+
+// Fixed-size arrays
+impl<T: AsRef<std::ffi::OsStr>, const N: usize> IntoArgs for [T; N] {
+    fn into_args(self) -> Vec<String> {
+        self.iter()
+            .map(|s| s.as_ref().to_string_lossy().to_string())
+            .collect()
+    }
+}
+
+impl<T: AsRef<std::ffi::OsStr>, const N: usize> IntoArgs for &[T; N] {
+    fn into_args(self) -> Vec<String> {
+        self.iter()
+            .map(|s| s.as_ref().to_string_lossy().to_string())
+            .collect()
+    }
+}
+
+/// Create a command with safe argument handling.
+///
+/// The first argument is a string that is split on whitespace into the program
+/// name and any literal arguments. Additional arguments are appended as-is —
+/// they are **not** interpreted by a shell, so spaces, quotes, globs, and
+/// special characters are passed through safely.
+///
+/// Vectors and slices are flattened — each element becomes a separate argument.
+///
+/// # Examples
+///
+/// ```no_run
+/// use raxx::cmd;
+///
+/// # fn main() -> raxx::Result<()> {
+/// // Simple command
+/// cmd!("echo", "hello").run()?;
+///
+/// // First arg is split on whitespace for convenience
+/// cmd!("grep -rn", "pattern", "src/").run()?;
+///
+/// // Variables with spaces are safe
+/// let name = "hello world";
+/// let text = cmd!("echo", name).text()?;
+/// assert_eq!(text, "hello world");
+///
+/// // Vectors are flattened into separate args
+/// let files = vec!["a.txt", "b.txt", "c.txt"];
+/// cmd!("cat", files).run()?;
+/// # Ok(())
+/// # }
+/// ```
+#[macro_export]
+macro_rules! cmd {
+    ($cmd:expr $(, $arg:expr)* $(,)?) => {
+        $crate::Cmd::parse($cmd)$(.push_args($arg))*
+    };
+}
+
+/// Create a shell command via `/bin/sh -c`.
+///
+/// The first argument is the base shell command string. Additional arguments
+/// are shell-escaped and appended, making it safe to pass variables and
+/// vectors without injection risk.
+///
+/// Vectors and slices are flattened — each element is escaped and appended
+/// as a separate shell argument.
+///
+/// # Examples
+///
+/// ```no_run
+/// use raxx::shell;
+///
+/// # fn main() -> raxx::Result<()> {
+/// // Simple shell command
+/// let text = shell!("echo hello | tr a-z A-Z").text()?;
+/// assert_eq!(text, "HELLO");
+///
+/// // Extra args are escaped and appended
+/// let pattern = "hello world";
+/// shell!("grep", pattern, "file.txt").run()?;
+/// // Executes: /bin/sh -c "grep 'hello world' file.txt"
+///
+/// // Vectors are flattened, each element escaped
+/// let flags = vec!["--verbose", "--color=always"];
+/// shell!("ls", flags).run()?;
+/// // Executes: /bin/sh -c "ls --verbose --color=always"
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Security
+///
+/// The base command string (first argument) is passed to the shell as-is.
+/// **Do not** interpolate untrusted input into it. Additional arguments
+/// (after the first) are safely escaped via [`escape_arg`].
+#[macro_export]
+macro_rules! shell {
+    ($cmd:expr $(, $arg:expr)* $(,)?) => {{
+        let mut __raxx_cmd = String::from($cmd);
+        $($crate::_append_shell_args(&mut __raxx_cmd, $arg);)*
+        $crate::Cmd::shell(&__raxx_cmd)
+    }};
+}
+
+/// Internal helper for `shell!` macro — appends escaped arguments to a shell
+/// command string. Not intended for direct use.
+#[doc(hidden)]
+pub fn _append_shell_args<A: IntoArgs>(cmd: &mut String, args: A) {
+    for arg in args.into_args() {
+        cmd.push(' ');
+        cmd.push_str(&escape_arg(&arg));
+    }
+}
+
+/// Escape a string for safe use in a shell command.
+///
+/// Returns the string unchanged if it contains only safe characters
+/// (alphanumeric, `-`, `_`, `=`, `/`, `.`, `,`, `:`, `@`). Otherwise
+/// wraps it in single quotes, escaping any embedded single quotes.
+///
+/// Empty strings return `''`.
+///
+/// # Examples
+///
+/// ```
+/// use raxx::escape_arg;
+///
+/// assert_eq!(escape_arg("hello"), "hello");
+/// assert_eq!(escape_arg("hello world"), "'hello world'");
+/// assert_eq!(escape_arg(""), "''");
+/// assert_eq!(escape_arg("it's"), "'it'\"'\"'s'");
+/// ```
+pub fn escape_arg(arg: &str) -> String {
+    if arg.is_empty() {
+        return "''".to_string();
+    }
+    if arg
+        .chars()
+        .all(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '=' | '/' | '.' | ',' | ':' | '@'))
+    {
+        return arg.to_string();
+    }
+    format!("'{}'", arg.replace('\'', "'\"'\"'"))
+}
