@@ -74,14 +74,14 @@
 //! # Error Handling
 //!
 //! Commands return [`CmdError`] on non-zero exit codes by default. Use
-//! [`.no_throw()`](Cmd::no_throw) or [`.run_exit_code()`](Cmd::run_exit_code)
+//! [`.no_exit_err()`](Cmd::no_throw) or [`.run_exit_code()`](Cmd::run_exit_code)
 //! to suppress this.
 //!
 //! ```no_run
 //! # use raxx::cmd;
 //! # fn main() -> raxx::Result<()> {
 //! let code = cmd!("false").run_exit_code()?; // 1, no error
-//! let result = cmd!("false").no_throw().run()?; // code=1, no error
+//! let result = cmd!("false").no_exit_err().run()?; // code=1, no error
 //! # Ok(())
 //! # }
 //! ```
@@ -97,7 +97,7 @@ mod tail;
 
 pub use cmd::{Append, Cmd, CmdOps, Null, RedirectFrom, Stderr, Stdout, TimeoutConfig};
 pub use error::{CmdError, Result};
-pub use glob_util::glob;
+pub use glob_util::{glob, glob_esc};
 pub use result::{Captured, CmdResult, Redirected};
 pub use tail::{TailOptions, TailStream};
 

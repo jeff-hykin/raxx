@@ -1,4 +1,4 @@
-# raxx
+# Raxx
 
 A dax-inspired shell scripting library for Rust. Synchronous, Unix-only.
 
@@ -50,15 +50,21 @@ cmd!("sleep", "60")
     .run()?;
 
 // Check success without throwing
-let result = cmd!("cargo", "test").run_no_throw()?;
+let result = cmd!("cargo", "test").run_no_exit_err()?;
 if result.success() {
     println!("all tests passed");
 }
 
 // Shared options
-let ops = CmdOps::new()
-    .cwd("/my/project")
-    .verbose(true);
+let ops = CmdOps {
+    env: HashMap::from([("RUST_LOG".into(), "debug".into())]),
+    cwd: Some("/my/project".into()),
+    shell: None,            // defaults to ("/bin/sh", "-c")
+    verbose: true,          // print commands before running
+    dry: false,             // actually run commands
+    no_err: false,          // propagate errors
+    no_warn: false,         // show warnings
+};
 
 cmd!("cargo", "build"; &ops).run()?;
 cmd!("cargo", "test"; &ops).run()?;
@@ -66,9 +72,9 @@ cmd!("cargo", "test"; &ops).run()?;
 
 ## Two Macros
 
-### `cmd!` — Safe commands
+### `cmd!` — Shellless Commands
 
-The `cmd!` macro builds a command **without** invoking a shell. The first argument is the program name. Additional arguments are appended as-is — no shell interpretation, no glob expansion, no variable substitution. This makes it safe for user-provided input.
+When possible, perfer `cmd!` over `shell!` for performance and clarity.
 
 ```rust
 use raxx::cmd;
@@ -98,27 +104,14 @@ shell!("VAR=hello && echo $VAR").run()?;
 
 ## Shell Interpolation with Escaping
 
-The `shell!` macro supports argument interpolation as `{variable}` — variables are automatically
-shell-escaped before insertion, preventing injection attacks:
+The `shell!` macro is for convenience. Warning: every interpolation is escaped as a shell argument. E.g. `shell!("echo hi > {file_path}")` is equivalent to `shell!("echo hi > './file/path'")`.
 
 ```rust
 use raxx::shell;
 
-let name = "hello world";
-let text = shell!("echo {name} | tr a-z A-Z").run_stdout()?;
-assert_eq!(text.trim(), "HELLO WORLD");
-// Executes: /bin/sh -c "echo 'hello world' | tr a-z A-Z"
-
-// Multiple variables
-let src = "my file.txt";
-let dst = "/tmp/backup";
-shell!("cp {src} {dst}").run()?;
-
-// Injection-safe: special characters are escaped
-let user_input = "hello; rm -rf /";
-shell!("echo {user_input}").run()?;
-// Executes: /bin/sh -c "echo 'hello; rm -rf /'"
-// (the semicolon is safely quoted, not executed)
+let weird_filename = "hello;rm -rf /";
+shell!("cat {weird_filename}").run()?;
+// no rm -rf / in the output 
 
 // Vectors are escaped element-by-element and joined with spaces
 let files = vec!["my file.txt", "other file.txt"];
@@ -130,7 +123,7 @@ let greeting = "hello";
 shell!("X=world; echo {greeting} $X").run()?;
 // prints: hello world
 
-// Inline glob expansion — matched files are escaped and inserted
+// safe glob expansion — permission errors and 0-matches surface in run
 shell!("wc -l {glob(\"src/**/*.rs\")}").run()?;
 // Expands to something like: /bin/sh -c "wc -l src/cmd.rs src/lib.rs ..."
 
@@ -235,9 +228,36 @@ let extra_flags = vec!["--release", "--all-targets"];
 cmd!("cargo", "build", extra_flags; &ops).run()?;
 ```
 
+### Struct Literal Syntax
+
+You can also construct `CmdOps` with struct literal syntax to see every
+option and its default at a glance:
+
+```rust
+use raxx::CmdOps;
+use std::collections::HashMap;
+
+let ops = CmdOps {
+    env: HashMap::from([("RUST_LOG".into(), "debug".into())]),
+    cwd: Some("/my/project".into()),
+    shell: None,            // defaults to ("/bin/sh", "-c")
+    verbose: true,          // print commands before running
+    dry: false,             // actually run commands
+    no_err: false,          // propagate errors
+    no_warn: false,         // show warnings
+};
+
+// Use `..Default::default()` to only set what you need
+let ops = CmdOps {
+    verbose: true,
+    dry: true,
+    ..Default::default()
+};
+```
+
 ### Overriding and Updating
 
-`CmdOps` is a regular struct with builder methods, so you can derive new configs from existing ones:
+`CmdOps` has public fields and builder methods, so you can derive new configs from existing ones either way:
 
 ```rust
 use raxx::{cmd, CmdOps};
@@ -256,6 +276,11 @@ let debug = base.clone()
 let ci = base.clone()
     .no_err(true)
     .no_warn(true);
+
+// Or override fields directly
+let mut custom = base.clone();
+custom.verbose = true;
+custom.dry = true;
 
 // Per-command overrides still work alongside ops
 cmd!("cargo", "test"; &base)
@@ -494,8 +519,8 @@ use raxx::{cmd, shell, CmdError};
 // Default: error on non-zero
 let err = cmd!("false").run().unwrap_err();
 
-// no_throw: suppress exit-code errors only
-let result = cmd!("false").no_throw().run()?;
+// no_exit_err: suppress exit-code errors only
+let result = cmd!("false").no_exit_err().run()?;
 assert_eq!(result.code, 1);
 
 // no_err: swallow ALL errors (prints warnings for serious ones)
@@ -504,15 +529,15 @@ cmd!("__nonexistent__").no_err().run()?;  // Ok, prints warning
 // no_nothin: swallow ALL errors silently
 cmd!("__nonexistent__").no_nothin().run()?;  // Ok, no output
 
-// run_no_throw / run_ignore_code: execution shorthands
-let result = cmd!("false").run_no_throw()?;
+// run_no_exit_err / run_ignore_code: execution shorthands
+let result = cmd!("false").run_no_exit_err()?;
 assert_eq!(result.code, 1);
 
 let result = cmd!("false").run_ignore_code()?;
 assert_eq!(result.code, 1);
 
 // Suppress specific exit codes only
-let result = shell!("exit 42").no_throw_on(&[42]).run()?;
+let result = shell!("exit 42").no_exit_err_on(&[42]).run()?;
 assert_eq!(result.code, 42);
 
 // Just get the exit code (never throws)
@@ -639,6 +664,40 @@ assert_eq!(escape_arg(""), "''");
 assert_eq!(escape_arg("it's"), "'it'\"'\"'s'");
 ```
 
+## Glob Escaping
+
+When building glob patterns from user-provided or dynamic paths, use `glob_esc` to escape
+metacharacters (`*`, `?`, `[`, `]`) so they're treated as literal characters:
+
+```rust
+use raxx::{glob, glob_esc};
+
+// Without escaping, brackets in "my[project]" would be interpreted as a character class
+let dir = "my[project]";
+let files = glob(&format!("{}/*.rs", glob_esc(dir)))?;
+
+// Common pattern: escape a base path, then append a glob suffix
+let base = std::env::var("PROJECT_DIR").unwrap_or(".".into());
+let files = glob(&format!("{}/**/*.rs", glob_esc(&base)))?;
+
+// Works with cmd! and shell! too
+use raxx::{cmd, shell};
+let user_dir = "path/with spaces*and[brackets]";
+let pattern = format!("{}/*.txt", glob_esc(user_dir));
+cmd!("wc", "-l").glob(&pattern).run()?;
+```
+
+What gets escaped:
+
+```rust
+use raxx::glob_esc;
+
+assert_eq!(glob_esc("normal/path"), "normal/path");
+assert_eq!(glob_esc("dir[1]"), "dir[[]1[]]");
+assert_eq!(glob_esc("file*.txt"), "file[*].txt");
+assert_eq!(glob_esc("what?"), "what[?]");
+```
+
 ## CmdResult
 
 The `.run()` method returns `CmdResult<O, E>` with type-safe access to captured streams. If a stream was redirected, its accessors are unavailable at **compile time**.
@@ -696,6 +755,7 @@ The `.run()` method returns `CmdResult<O, E>` with type-safe access to captured 
 | Function | Description |
 |---|---|
 | `glob("pattern")` | Find files matching `*`, `**`, `?`, `[...]` patterns |
+| `glob_esc("str")` | Escape glob metacharacters (`*`, `?`, `[`, `]`) in a path |
 | `escape_arg("str")` | Shell-escape a string |
 
 ### `Cmd` Methods
@@ -724,8 +784,8 @@ The `.run()` method returns `CmdResult<O, E>` with type-safe access to captured 
 | | `.quiet_stdout()` | Suppress stdout |
 | | `.quiet_stderr()` | Suppress stderr |
 | | `.swap_streams()` | Swap stdout ↔ stderr |
-| **Behavior** | `.no_throw()` | Don't error on non-zero exit codes |
-| | `.no_throw_on(&[codes])` | Don't error for specific codes |
+| **Behavior** | `.no_exit_err()` | Don't error on non-zero exit codes |
+| | `.no_exit_err_on(&[codes])` | Don't error for specific codes |
 | | `.no_err()` | Swallow all errors (warn on serious) |
 | | `.no_nothin()` | Swallow all errors silently |
 | | `.timeout(duration)` | SIGTERM after duration, SIGKILL after 2s grace |
@@ -743,8 +803,8 @@ The `.run()` method returns `CmdResult<O, E>` with type-safe access to captured 
 | | `.run_stderr_json::<T>()` | Parse stderr as JSON |
 | | `.run_exit_code()` | Get exit code, never throws |
 | | `.run_success()` | Returns `bool`, never throws |
-| | `.run_no_throw()` | Like `.run()` but ignores exit codes |
-| | `.run_ignore_code()` | Alias for `.run_no_throw()` |
+| | `.run_no_exit_err()` | Like `.run()` but ignores exit codes |
+| | `.run_ignore_code()` | Alias for `.run_no_exit_err()` |
 | | `.run_with_tail(title, done, n)` | Spinner + last N lines of stdout |
 | | `.run_with_tail_opts(opts)` | Spinner with full `TailOptions` |
 

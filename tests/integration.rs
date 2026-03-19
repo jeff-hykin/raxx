@@ -106,7 +106,7 @@ fn test_json_array() {
 #[test]
 fn test_output_stdout_and_stderr() {
     let result = shell!("echo out; echo err >&2")
-        .no_throw()
+        .no_exit_err()
         .run()
         .unwrap();
     assert_eq!(result.stdout_trimmed(), "out");
@@ -115,19 +115,19 @@ fn test_output_stdout_and_stderr() {
 
 #[test]
 fn test_output_code() {
-    let result = shell!("exit 5").no_throw().run().unwrap();
+    let result = shell!("exit 5").no_exit_err().run().unwrap();
     assert_eq!(result.code, 5);
 }
 
 #[test]
 fn test_output_success() {
-    let result = cmd!("true").no_throw().run().unwrap();
+    let result = cmd!("true").no_exit_err().run().unwrap();
     assert!(result.success());
 }
 
 #[test]
 fn test_output_failure() {
-    let result = cmd!("false").no_throw().run().unwrap();
+    let result = cmd!("false").no_exit_err().run().unwrap();
     assert!(!result.success());
 }
 
@@ -840,20 +840,20 @@ fn test_shell_command_substitution() {
 // ============================================================================
 
 #[test]
-fn test_no_throw() {
-    let result = cmd!("false").no_throw().run().unwrap();
+fn test_no_exit_err() {
+    let result = cmd!("false").no_exit_err().run().unwrap();
     assert_eq!(result.code, 1);
 }
 
 #[test]
-fn test_no_throw_on_matching() {
-    let result = shell!("exit 42").no_throw_on(&[42]).run().unwrap();
+fn test_no_exit_err_on_matching() {
+    let result = shell!("exit 42").no_exit_err_on(&[42]).run().unwrap();
     assert_eq!(result.code, 42);
 }
 
 #[test]
-fn test_no_throw_on_non_matching() {
-    let result = shell!("exit 42").no_throw_on(&[1, 2, 3]).run();
+fn test_no_exit_err_on_non_matching() {
+    let result = shell!("exit 42").no_exit_err_on(&[1, 2, 3]).run();
     assert!(result.is_err());
 }
 
@@ -913,7 +913,7 @@ fn test_status_code_failure() {
 #[test]
 fn test_stderr_captured_in_error() {
     let result = shell!("echo err_msg >&2; exit 1")
-        .no_throw()
+        .no_exit_err()
         .run()
         .unwrap();
     assert_eq!(result.code, 1);
@@ -1716,8 +1716,8 @@ fn test_check_then_act() {
 }
 
 #[test]
-fn test_no_throw_then_check() {
-    let result = shell!("exit 42").no_throw().run().unwrap();
+fn test_no_exit_err_then_check() {
+    let result = shell!("exit 42").no_exit_err().run().unwrap();
     assert_eq!(result.code, 42);
 }
 
@@ -2487,12 +2487,12 @@ fn test_no_err_with_deferred_error() {
 }
 
 // ============================================================================
-// run_no_throw / run_ignore_code
+// run_no_exit_err / run_ignore_code
 // ============================================================================
 
 #[test]
-fn test_run_no_throw() {
-    let result = cmd!("false").run_no_throw();
+fn test_run_no_exit_err() {
+    let result = cmd!("false").run_no_exit_err();
     assert!(result.is_ok());
     let r = result.unwrap();
     assert_eq!(r.code, 1);
@@ -2500,8 +2500,8 @@ fn test_run_no_throw() {
 }
 
 #[test]
-fn test_run_no_throw_still_errors_on_not_found() {
-    let result = cmd!("__nonexistent_xyz__").run_no_throw();
+fn test_run_no_exit_err_still_errors_on_not_found() {
+    let result = cmd!("__nonexistent_xyz__").run_no_exit_err();
     assert!(result.is_err());
 }
 

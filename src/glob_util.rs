@@ -42,6 +42,50 @@ use std::path::PathBuf;
 ///     .collect();
 /// cmd!("cat", files).run().unwrap();
 /// ```
+/// Escape a string so it is treated as a literal path component in a glob pattern.
+///
+/// Escapes the special characters `*`, `?`, `[`, and `]` by wrapping each in
+/// square brackets (e.g. `*` → `[*]`), which is the standard glob escaping
+/// convention.
+///
+/// This is useful when you have a user-provided directory path that may contain
+/// glob metacharacters and you want to append a pattern suffix to it.
+///
+/// # Examples
+///
+/// ```
+/// use raxx::glob_esc;
+///
+/// assert_eq!(glob_esc("normal/path"), "normal/path");
+/// assert_eq!(glob_esc("dir[1]"), "dir[[]1[]]");
+/// assert_eq!(glob_esc("file*.txt"), "file[*].txt");
+/// assert_eq!(glob_esc("what?"), "what[?]");
+/// ```
+///
+/// ```no_run
+/// use raxx::{glob, glob_esc};
+///
+/// // Safe even if `dir` contains glob metacharacters
+/// let dir = "my[project]";
+/// let files = glob(&format!("{}/*.rs", glob_esc(dir))).unwrap();
+/// ```
+pub fn glob_esc(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '*' | '?' => {
+                out.push('[');
+                out.push(c);
+                out.push(']');
+            }
+            '[' => out.push_str("[[]"),
+            ']' => out.push_str("[]]"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 pub fn glob(pattern: &str) -> crate::Result<Vec<PathBuf>> {
     let entries = glob::glob(pattern).map_err(|e| {
         crate::CmdError::Io(std::io::Error::new(

@@ -217,15 +217,41 @@ impl<O, T: Into<RedirectTarget>> RedirectFrom<Stderr, T> for Cmd<O, Captured> {
 /// cmd!("ls"; &ops).run().ok();
 /// shell!("echo hello"; &ops).run().ok();
 /// ```
+///
+/// You can also use struct literal syntax to see all available options with
+/// their defaults:
+///
+/// ```no_run
+/// use raxx::CmdOps;
+/// use std::collections::HashMap;
+///
+/// let ops = CmdOps {
+///     env: HashMap::from([("RUST_LOG".into(), "debug".into())]),
+///     cwd: Some("/my/project".into()),
+///     shell: None,            // defaults to ("/bin/sh", "-c")
+///     verbose: true,          // print commands before running
+///     dry: false,             // actually run commands
+///     no_err: false,          // propagate errors
+///     no_warn: false,         // show warnings
+/// };
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct CmdOps {
-    env: HashMap<String, String>,
-    cwd: Option<PathBuf>,
-    shell: Option<(String, String)>,
-    verbose: bool,
-    dry: bool,
-    no_err: bool,
-    no_warn: bool,
+    /// Environment variables to set.
+    pub env: HashMap<String, String>,
+    /// Working directory.
+    pub cwd: Option<PathBuf>,
+    /// Shell program and flag, e.g. `Some(("/bin/bash".into(), "-c".into()))`.
+    /// When `None`, uses `/bin/sh -c`.
+    pub shell: Option<(String, String)>,
+    /// Print `$ command` to stderr before executing.
+    pub verbose: bool,
+    /// Print the command but don't execute it.
+    pub dry: bool,
+    /// Swallow all errors (prints warnings for serious ones like not-found).
+    pub no_err: bool,
+    /// Swallow all errors silently (no warnings). Implies `no_err`.
+    pub no_warn: bool,
 }
 
 impl CmdOps {
@@ -823,14 +849,14 @@ impl<O, E> Cmd<O, E> {
     /// Don't error on non-zero exit codes (but still errors on IO/not-found/etc).
     ///
     /// Prefer [`.no_err()`](Cmd::no_err) to swallow all errors, or
-    /// [`.run_no_throw()`](Cmd::run_no_throw) as an execution shorthand.
-    pub fn no_throw(mut self) -> Self {
+    /// [`.run_no_exit_err()`](Cmd::run_no_exit_err) as an execution shorthand.
+    pub fn no_exit_err(mut self) -> Self {
         self.inner.throw = ThrowBehavior::NoThrow;
         self
     }
 
     /// Don't error for specific exit codes.
-    pub fn no_throw_on(mut self, codes: &[i32]) -> Self {
+    pub fn no_exit_err_on(mut self, codes: &[i32]) -> Self {
         self.inner.throw = ThrowBehavior::NoThrowOn(codes.to_vec());
         self
     }
@@ -1078,16 +1104,16 @@ impl<O, E> Cmd<O, E> {
     ///
     /// Unlike [`.no_err()`](Cmd::no_err), this only suppresses exit-code errors.
     /// IO errors, command-not-found, etc. still propagate.
-    pub fn run_no_throw(mut self) -> Result<CmdResult<O, E>> {
+    pub fn run_no_exit_err(mut self) -> Result<CmdResult<O, E>> {
         self.inner.throw = ThrowBehavior::NoThrow;
         let raw = self.execute_to_raw()?;
         Ok(CmdResult::from_raw(raw))
     }
 
     /// Execute the command, ignoring non-zero exit codes.
-    /// Alias for [`.run_no_throw()`](Cmd::run_no_throw).
+    /// Alias for [`.run_no_exit_err()`](Cmd::run_no_exit_err).
     pub fn run_ignore_code(self) -> Result<CmdResult<O, E>> {
-        self.run_no_throw()
+        self.run_no_exit_err()
     }
 }
 
