@@ -64,5 +64,10 @@ pub fn glob(pattern: &str) -> crate::Result<Vec<PathBuf>> {
     }
     paths.sort();
     paths.dedup();
+    if paths.is_empty() {
+        return Err(crate::CmdError::GlobNoMatches {
+            pattern: pattern.to_string(),
+        });
+    }
     Ok(paths)
 }

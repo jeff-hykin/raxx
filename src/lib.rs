@@ -15,37 +15,40 @@
 //! # Quick Start
 //!
 //! ```no_run
-//! use raxx::{cmd, shell};
+//! use raxx::{cmd, shell, Stdout, Stderr, Null, Append};
 //!
 //! # fn main() -> raxx::Result<()> {
-//! // Run a command
-//! cmd!("echo", "hello world").run()?;
+//! // Run a command (auto-captures stdout and stderr)
+//! let result = cmd!("echo", "hello world").run()?;
 //!
-//! // Capture output
-//! let text = cmd!("echo", "hello").text()?;
-//! assert_eq!(text, "hello");
+//! // Get stdout
+//! let text = cmd!("echo", "hello").run_stdout()?;
+//! assert_eq!(text.trim(), "hello");
 //!
 //! // Shell syntax
-//! let text = shell!("echo hello | tr a-z A-Z").text()?;
-//! assert_eq!(text, "HELLO");
+//! let result = shell!("echo hello | tr a-z A-Z").run()?;
+//! assert_eq!(result.stdout_trimmed(), "HELLO");
 //!
 //! // Piping with the builder API
-//! let text = cmd!("echo", "hello")
+//! let result = cmd!("echo", "hello")
 //!     .pipe(cmd!("tr", "a-z", "A-Z"))
-//!     .text()?;
-//! assert_eq!(text, "HELLO");
+//!     .run()?;
+//! assert_eq!(result.stdout_trimmed(), "HELLO");
 //!
 //! // Chaining (&&, ||, ;)
-//! let text = cmd!("false")
+//! let result = cmd!("false")
 //!     .or(cmd!("echo", "fallback"))
-//!     .text()?;
-//! assert_eq!(text, "fallback");
+//!     .run()?;
+//! assert_eq!(result.stdout_trimmed(), "fallback");
+//!
+//! // Redirect stdout to a file
+//! cmd!("echo", "hello").redirect(Stdout, "out.txt").run()?;
 //!
 //! // Environment and working directory
 //! let text = shell!("echo $MY_VAR")
 //!     .env("MY_VAR", "hello")
 //!     .cwd("/tmp")
-//!     .text()?;
+//!     .run_stdout()?;
 //! # Ok(())
 //! # }
 //! ```
@@ -71,14 +74,14 @@
 //! # Error Handling
 //!
 //! Commands return [`CmdError`] on non-zero exit codes by default. Use
-//! [`.no_throw()`](Cmd::no_throw) or [`.status_code()`](Cmd::status_code)
+//! [`.no_throw()`](Cmd::no_throw) or [`.run_exit_code()`](Cmd::run_exit_code)
 //! to suppress this.
 //!
 //! ```no_run
 //! # use raxx::cmd;
 //! # fn main() -> raxx::Result<()> {
-//! let code = cmd!("false").status_code()?; // 1, no error
-//! let output = cmd!("false").no_throw().output()?; // code=1, no error
+//! let code = cmd!("false").run_exit_code()?; // 1, no error
+//! let result = cmd!("false").no_throw().run()?; // code=1, no error
 //! # Ok(())
 //! # }
 //! ```
@@ -92,12 +95,11 @@ mod pipeline;
 mod result;
 mod tail;
 
-pub use cmd::{Cmd, TimeoutConfig};
+pub use cmd::{Append, Cmd, Null, RedirectFrom, Stderr, Stdout, TimeoutConfig};
 pub use error::{CmdError, Result};
 pub use glob_util::glob;
-pub use pipeline::Pipeline;
-pub use result::CmdOutput;
-pub use tail::TailOptions;
+pub use result::{Captured, CmdResult, Redirected};
+pub use tail::{TailOptions, TailStream};
 
 /// Trait for types that can be used as arguments in [`cmd!`] and [`shell!`].
 ///
@@ -191,8 +193,8 @@ impl<T: AsRef<std::ffi::OsStr>, const N: usize> IntoArgs for &[T; N] {
 ///
 /// // Variables with spaces are safe
 /// let name = "hello world";
-/// let text = cmd!("echo", name).text()?;
-/// assert_eq!(text, "hello world");
+/// let text = cmd!("echo", name).run_stdout()?;
+/// assert_eq!(text.trim(), "hello world");
 ///
 /// // Vectors are flattened into separate args
 /// let files = vec!["a.txt", "b.txt", "c.txt"];
@@ -216,7 +218,7 @@ macro_rules! cmd {
 /// use raxx::shell;
 /// # fn main() -> raxx::Result<()> {
 /// let name = "hello world";
-/// let text = shell!("echo {name} | tr a-z A-Z").text()?;
+/// let text = shell!("echo {name} | tr a-z A-Z").run_stdout()?;
 /// // Executes: /bin/sh -c "echo 'hello world' | tr a-z A-Z"
 /// # Ok(())
 /// # }
@@ -237,8 +239,8 @@ macro_rules! cmd {
 /// ```no_run
 /// use raxx::shell;
 /// # fn main() -> raxx::Result<()> {
-/// let text = shell!("echo hello | tr a-z A-Z").text()?;
-/// assert_eq!(text, "HELLO");
+/// let text = shell!("echo hello | tr a-z A-Z").run_stdout()?;
+/// assert_eq!(text.trim(), "HELLO");
 /// # Ok(())
 /// # }
 /// ```

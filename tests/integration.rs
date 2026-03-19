@@ -1,4 +1,4 @@
-use raxx::{cmd, glob, shell, Cmd, CmdError, TailOptions};
+use raxx::{cmd, glob, shell, Cmd, CmdError, TailOptions, Stdout, Stderr, Append};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -14,13 +14,13 @@ fn temp_dir() -> TempDir {
 
 #[test]
 fn test_basic_echo() {
-    let text = cmd!("echo", "hello").text().unwrap();
+    let text = cmd!("echo", "hello").run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello");
 }
 
 #[test]
 fn test_echo_multiple_args() {
-    let text = cmd!("echo", "hello", "world").text().unwrap();
+    let text = cmd!("echo", "hello", "world").run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello world");
 }
 
@@ -37,19 +37,19 @@ fn test_run_failure() {
 
 #[test]
 fn test_exit_code_zero() {
-    let code = cmd!("true").status_code().unwrap();
+    let code = cmd!("true").run_exit_code().unwrap();
     assert_eq!(code, 0);
 }
 
 #[test]
 fn test_exit_code_nonzero() {
-    let code = cmd!("false").status_code().unwrap();
+    let code = cmd!("false").run_exit_code().unwrap();
     assert_eq!(code, 1);
 }
 
 #[test]
 fn test_exit_code_custom() {
-    let code = shell!("exit 42").status_code().unwrap();
+    let code = shell!("exit 42").run_exit_code().unwrap();
     assert_eq!(code, 42);
 }
 
@@ -59,92 +59,90 @@ fn test_exit_code_custom() {
 
 #[test]
 fn test_text_trims_output() {
-    let text = cmd!("echo", "  hello  ").text().unwrap();
-    // echo adds a trailing newline, text() trims it
+    let text = cmd!("echo", "  hello  ").run().unwrap().stdout_trimmed();
+    // echo adds a trailing newline, stdout_trimmed() trims it
     assert_eq!(text, "hello");
 }
 
 #[test]
 fn test_text_multiline() {
-    let text = shell!("echo 'line1'; echo 'line2'").text().unwrap();
+    let text = shell!("echo 'line1'; echo 'line2'").run().unwrap().stdout_trimmed();
     assert_eq!(text, "line1\nline2");
 }
 
 #[test]
 fn test_lines() {
     let lines = shell!("echo 'line1'; echo 'line2'; echo 'line3'")
-        .lines()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_lines();
     assert_eq!(lines, vec!["line1", "line2", "line3"]);
 }
 
 #[test]
 fn test_bytes() {
-    let bytes = cmd!("echo", "hello").bytes().unwrap();
+    let bytes = cmd!("echo", "hello").run().unwrap().stdout_bytes().to_vec();
     assert_eq!(bytes, b"hello\n");
 }
 
 #[test]
 fn test_json() {
-    let val: serde_json::Value = cmd!("echo", r#"{"key":"value"}"#).json().unwrap();
+    let val: serde_json::Value = cmd!("echo", r#"{"key":"value"}"#).run_stdout_json().unwrap();
     assert_eq!(val["key"], "value");
 }
 
 #[test]
 fn test_json_number() {
-    let val: i32 = cmd!("echo", "42").json().unwrap();
+    let val: i32 = cmd!("echo", "42").run_stdout_json().unwrap();
     assert_eq!(val, 42);
 }
 
 #[test]
 fn test_json_array() {
-    let val: Vec<i32> = cmd!("echo", "[1,2,3]").json().unwrap();
+    let val: Vec<i32> = cmd!("echo", "[1,2,3]").run_stdout_json().unwrap();
     assert_eq!(val, vec![1, 2, 3]);
 }
 
 #[test]
 fn test_output_stdout_and_stderr() {
-    let output = shell!("echo out; echo err >&2")
-        .stdout_capture()
-        .stderr_capture()
+    let result = shell!("echo out; echo err >&2")
         .no_throw()
-        .output()
+        .run()
         .unwrap();
-    assert_eq!(output.stdout_text().unwrap(), "out");
-    assert_eq!(output.stderr_text().unwrap(), "err");
+    assert_eq!(result.stdout_trimmed(), "out");
+    assert_eq!(result.stderr_trimmed(), "err");
 }
 
 #[test]
 fn test_output_code() {
-    let output = shell!("exit 5").no_throw().output().unwrap();
-    assert_eq!(output.code, 5);
+    let result = shell!("exit 5").no_throw().run().unwrap();
+    assert_eq!(result.code, 5);
 }
 
 #[test]
 fn test_output_success() {
-    let output = cmd!("true").no_throw().output().unwrap();
-    assert!(output.success());
+    let result = cmd!("true").no_throw().run().unwrap();
+    assert!(result.success());
 }
 
 #[test]
 fn test_output_failure() {
-    let output = cmd!("false").no_throw().output().unwrap();
-    assert!(!output.success());
+    let result = cmd!("false").no_throw().run().unwrap();
+    assert!(!result.success());
 }
 
 #[test]
 fn test_stdout_capture_explicit() {
-    let output = cmd!("echo", "hello").stdout_capture().output().unwrap();
-    assert_eq!(output.stdout_text().unwrap(), "hello");
+    let result = cmd!("echo", "hello").run().unwrap();
+    assert_eq!(result.stdout_trimmed(), "hello");
 }
 
 #[test]
 fn test_stderr_capture_explicit() {
-    let output = shell!("echo err >&2")
-        .stderr_capture()
-        .output()
+    let result = shell!("echo err >&2")
+        .run()
         .unwrap();
-    assert_eq!(output.stderr_text().unwrap(), "err");
+    assert_eq!(result.stderr_trimmed(), "err");
 }
 
 // ============================================================================
@@ -154,37 +152,37 @@ fn test_stderr_capture_explicit() {
 #[test]
 fn test_arg_with_spaces() {
     let name = "hello world";
-    let text = cmd!("echo", name).text().unwrap();
+    let text = cmd!("echo", name).run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello world");
 }
 
 #[test]
 fn test_arg_with_single_quotes() {
-    let text = cmd!("echo", "it's").text().unwrap();
+    let text = cmd!("echo", "it's").run().unwrap().stdout_trimmed();
     assert_eq!(text, "it's");
 }
 
 #[test]
 fn test_arg_with_double_quotes() {
-    let text = cmd!("echo", r#"say "hello""#).text().unwrap();
+    let text = cmd!("echo", r#"say "hello""#).run().unwrap().stdout_trimmed();
     assert_eq!(text, r#"say "hello""#);
 }
 
 #[test]
 fn test_arg_with_special_chars() {
-    let text = cmd!("echo", "hello$world").text().unwrap();
+    let text = cmd!("echo", "hello$world").run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello$world");
 }
 
 #[test]
 fn test_arg_with_newlines() {
-    let text = cmd!("echo", "line1\nline2").text().unwrap();
+    let text = cmd!("echo", "line1\nline2").run().unwrap().stdout_trimmed();
     assert_eq!(text, "line1\nline2");
 }
 
 #[test]
 fn test_arg_with_backslash() {
-    let text = cmd!("echo", r"back\slash").text().unwrap();
+    let text = cmd!("echo", r"back\slash").run().unwrap().stdout_trimmed();
     assert_eq!(text, r"back\slash");
 }
 
@@ -195,34 +193,34 @@ fn test_arg_with_glob_chars() {
     let path = dir.path().join("test_file.txt");
     fs::write(&path, "content").unwrap();
     // echo with * should print literal *, not expand
-    let text = cmd!("echo", "*").text().unwrap();
+    let text = cmd!("echo", "*").run().unwrap().stdout_trimmed();
     assert_eq!(text, "*");
 }
 
 #[test]
 fn test_arg_empty_string() {
     // An empty argument should be passed through
-    let text = cmd!("printf", "%s", "").text().unwrap();
+    let text = cmd!("printf", "%s", "").run().unwrap().stdout_trimmed();
     assert_eq!(text, "");
 }
 
 #[test]
 fn test_args_from_vec() {
     let items = vec!["a", "b", "c"];
-    let text = Cmd::new("echo").args(items).text().unwrap();
+    let text = Cmd::new("echo").args(items).run().unwrap().stdout_trimmed();
     assert_eq!(text, "a b c");
 }
 
 #[test]
 fn test_args_mixed() {
     let extra = "extra arg";
-    let text = cmd!("echo", "fixed", extra).text().unwrap();
+    let text = cmd!("echo", "fixed", extra).run().unwrap().stdout_trimmed();
     assert_eq!(text, "fixed extra arg");
 }
 
 #[test]
 fn test_cmd_first_arg_is_program() {
-    let text = cmd!("echo", "hello", "world").text().unwrap();
+    let text = cmd!("echo", "hello", "world").run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello world");
 }
 
@@ -265,8 +263,9 @@ fn test_escape_arg_with_special() {
 fn test_env_single() {
     let text = shell!("echo $MY_VAR")
         .env("MY_VAR", "hello")
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "hello");
 }
 
@@ -275,8 +274,9 @@ fn test_env_multiple() {
     let text = shell!("echo $VAR1 $VAR2")
         .env("VAR1", "hello")
         .env("VAR2", "world")
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "hello world");
 }
 
@@ -284,8 +284,9 @@ fn test_env_multiple() {
 fn test_envs_iterator() {
     let text = shell!("echo $A $B")
         .envs([("A", "1"), ("B", "2")])
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "1 2");
 }
 
@@ -295,8 +296,9 @@ fn test_env_override() {
     let text = shell!("echo $VAR")
         .env("VAR", "first")
         .env("VAR", "second")
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "second");
 }
 
@@ -305,20 +307,20 @@ fn test_env_remove() {
     let text = shell!("echo ${MY_TEST_VAR:-unset}")
         .env("MY_TEST_VAR", "set")
         .env_remove("MY_TEST_VAR")
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "unset");
 }
 
 #[test]
 fn test_env_clear() {
-    let output = cmd!("env")
+    let result = cmd!("env")
         .env_clear()
         .env("ONLY_THIS", "yes")
-        .stdout_capture()
-        .output()
+        .run()
         .unwrap();
-    let text = output.stdout_text().unwrap();
+    let text = result.stdout_trimmed();
     // Should only contain ONLY_THIS (and maybe some system ones on some platforms)
     assert!(text.contains("ONLY_THIS=yes"));
 }
@@ -327,8 +329,9 @@ fn test_env_clear() {
 fn test_env_with_spaces_in_value() {
     let text = shell!("echo $VAR")
         .env("VAR", "hello world")
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "hello world");
 }
 
@@ -336,8 +339,9 @@ fn test_env_with_spaces_in_value() {
 fn test_env_with_equals_in_value() {
     let text = shell!("echo $VAR")
         .env("VAR", "key=value")
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "key=value");
 }
 
@@ -345,8 +349,9 @@ fn test_env_with_equals_in_value() {
 fn test_env_empty_value() {
     let text = shell!("echo \"${VAR}end\"")
         .env("VAR", "")
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "end");
 }
 
@@ -357,7 +362,7 @@ fn test_env_empty_value() {
 #[test]
 fn test_cwd() {
     let dir = temp_dir();
-    let text = cmd!("pwd").cwd(dir.path()).text().unwrap();
+    let text = cmd!("pwd").cwd(dir.path()).run().unwrap().stdout_trimmed();
     // Resolve symlinks for comparison (macOS /tmp -> /private/tmp)
     let expected = fs::canonicalize(dir.path()).unwrap();
     let actual = PathBuf::from(&text);
@@ -369,7 +374,7 @@ fn test_cwd() {
 fn test_cwd_affects_file_operations() {
     let dir = temp_dir();
     fs::write(dir.path().join("test.txt"), "content").unwrap();
-    let text = cmd!("cat", "test.txt").cwd(dir.path()).text().unwrap();
+    let text = cmd!("cat", "test.txt").cwd(dir.path()).run().unwrap().stdout_trimmed();
     assert_eq!(text, "content");
 }
 
@@ -391,7 +396,7 @@ fn test_cwd_nonexistent() {
 
 #[test]
 fn test_stdin_text() {
-    let text = cmd!("cat").stdin_text("hello from stdin").text().unwrap();
+    let text = cmd!("cat").stdin_text("hello from stdin").run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello from stdin");
 }
 
@@ -399,8 +404,9 @@ fn test_stdin_text() {
 fn test_stdin_bytes() {
     let text = cmd!("cat")
         .stdin_bytes(b"hello bytes".to_vec())
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "hello bytes");
 }
 
@@ -409,21 +415,21 @@ fn test_stdin_path() {
     let dir = temp_dir();
     let path = dir.path().join("input.txt");
     fs::write(&path, "file content").unwrap();
-    let text = cmd!("cat").stdin_path(&path).text().unwrap();
+    let text = cmd!("cat").stdin_path(&path).run().unwrap().stdout_trimmed();
     assert_eq!(text, "file content");
 }
 
 #[test]
 fn test_stdin_null() {
     // wc -c on null stdin should output 0
-    let text = cmd!("wc", "-c").stdin_null().text().unwrap();
+    let text = cmd!("wc", "-c").stdin_null().run().unwrap().stdout_trimmed();
     assert_eq!(text.trim(), "0");
 }
 
 #[test]
 fn test_stdin_multiline() {
     let input = "line1\nline2\nline3";
-    let lines = cmd!("cat").stdin_text(input).lines().unwrap();
+    let lines = cmd!("cat").stdin_text(input).run().unwrap().stdout_lines();
     assert_eq!(lines, vec!["line1", "line2", "line3"]);
 }
 
@@ -431,15 +437,16 @@ fn test_stdin_multiline() {
 fn test_stdin_to_grep() {
     let text = cmd!("grep", "hello")
         .stdin_text("hello world\ngoodbye world\nhello again")
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "hello world\nhello again");
 }
 
 #[test]
 fn test_stdin_binary() {
     let data: Vec<u8> = vec![0, 1, 2, 3, 255, 254, 253];
-    let bytes = cmd!("cat").stdin_bytes(data.clone()).bytes().unwrap();
+    let bytes = cmd!("cat").stdin_bytes(data.clone()).run().unwrap().stdout_bytes().to_vec();
     assert_eq!(bytes, data);
 }
 
@@ -451,7 +458,7 @@ fn test_stdin_binary() {
 fn test_stdout_path() {
     let dir = temp_dir();
     let path = dir.path().join("output.txt");
-    cmd!("echo", "hello").stdout_path(&path).run().unwrap();
+    cmd!("echo", "hello").redirect(Stdout, &path).run().unwrap();
     let content = fs::read_to_string(&path).unwrap();
     assert_eq!(content.trim(), "hello");
 }
@@ -461,7 +468,7 @@ fn test_stdout_append() {
     let dir = temp_dir();
     let path = dir.path().join("output.txt");
     fs::write(&path, "existing\n").unwrap();
-    cmd!("echo", "appended").stdout_append(&path).run().unwrap();
+    cmd!("echo", "appended").redirect(Stdout, Append(&path)).run().unwrap();
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("existing"));
     assert!(content.contains("appended"));
@@ -471,7 +478,7 @@ fn test_stdout_append() {
 fn test_stdout_append_creates_file() {
     let dir = temp_dir();
     let path = dir.path().join("new_file.txt");
-    cmd!("echo", "created").stdout_append(&path).run().unwrap();
+    cmd!("echo", "created").redirect(Stdout, Append(&path)).run().unwrap();
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("created"));
 }
@@ -479,15 +486,15 @@ fn test_stdout_append_creates_file() {
 #[test]
 fn test_stdout_null() {
     // Should not error, just discard output
-    cmd!("echo", "discarded").stdout_null().run().unwrap();
+    cmd!("echo", "discarded").quiet_stdout().run().unwrap();
 }
 
 #[test]
 fn test_stdout_overwrite() {
     let dir = temp_dir();
     let path = dir.path().join("output.txt");
-    cmd!("echo", "first").stdout_path(&path).run().unwrap();
-    cmd!("echo", "second").stdout_path(&path).run().unwrap();
+    cmd!("echo", "first").redirect(Stdout, &path).run().unwrap();
+    cmd!("echo", "second").redirect(Stdout, &path).run().unwrap();
     let content = fs::read_to_string(&path).unwrap();
     assert_eq!(content.trim(), "second");
 }
@@ -501,7 +508,7 @@ fn test_stderr_path() {
     let dir = temp_dir();
     let path = dir.path().join("errors.txt");
     shell!("echo error_msg >&2")
-        .stderr_path(&path)
+        .redirect(Stderr, &path)
         .run()
         .unwrap();
     let content = fs::read_to_string(&path).unwrap();
@@ -514,7 +521,7 @@ fn test_stderr_append() {
     let path = dir.path().join("errors.txt");
     fs::write(&path, "existing\n").unwrap();
     shell!("echo new_error >&2")
-        .stderr_append(&path)
+        .redirect(Stderr, Append(&path))
         .run()
         .unwrap();
     let content = fs::read_to_string(&path).unwrap();
@@ -525,30 +532,28 @@ fn test_stderr_append() {
 #[test]
 fn test_stderr_null() {
     // Should not error
-    shell!("echo error >&2").stderr_null().run().unwrap();
+    shell!("echo error >&2").quiet_stderr().run().unwrap();
 }
 
 #[test]
 fn test_stderr_to_stdout() {
-    let output = shell!("echo out; echo err >&2")
-        .stderr_to_stdout()
-        .stdout_capture()
-        .output()
+    let result = shell!("echo out; echo err >&2")
+        .redirect(Stderr, Stdout)
+        .run()
         .unwrap();
-    let text = output.stdout_text().unwrap();
+    let text = result.stdout_trimmed();
     assert!(text.contains("out"));
     assert!(text.contains("err"));
 }
 
 #[test]
 fn test_stdout_to_stderr() {
-    // Capture stderr, stdout goes to stderr via ToOther
-    let output = shell!("echo out; echo err >&2")
-        .stdout_to_stderr()
-        .stderr_capture()
-        .output()
+    // Capture stderr, stdout goes to stderr via redirect
+    let result = shell!("echo out; echo err >&2")
+        .redirect(Stdout, Stderr)
+        .run()
         .unwrap();
-    let text = output.stderr_text().unwrap();
+    let text = result.stderr_trimmed();
     assert!(text.contains("err"));
 }
 
@@ -560,8 +565,9 @@ fn test_stdout_to_stderr() {
 fn test_pipe_simple() {
     let text = cmd!("echo", "hello world")
         .pipe(cmd!("tr", "a-z", "A-Z"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "HELLO WORLD");
 }
 
@@ -569,8 +575,9 @@ fn test_pipe_simple() {
 fn test_pipe_grep() {
     let text = cmd!("echo", "hello\ngoodbye\nhello again")
         .pipe(cmd!("grep", "hello"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert!(text.contains("hello"));
     assert!(!text.contains("goodbye"));
 }
@@ -580,8 +587,9 @@ fn test_pipe_chain() {
     let text = cmd!("echo", "3\n1\n2")
         .pipe(cmd!("sort"))
         .pipe(cmd!("head", "-n", "1"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "1");
 }
 
@@ -589,8 +597,9 @@ fn test_pipe_chain() {
 fn test_pipe_wc() {
     let text = shell!("echo 'line1'; echo 'line2'; echo 'line3'")
         .pipe(cmd!("wc", "-l"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text.trim(), "3");
 }
 
@@ -599,8 +608,9 @@ fn test_pipe_with_stdin() {
     let text = cmd!("cat")
         .stdin_text("hello\nworld")
         .pipe(cmd!("grep", "world"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "world");
 }
 
@@ -609,8 +619,9 @@ fn test_pipe_preserves_env() {
     let text = shell!("echo $MY_VAR")
         .env("MY_VAR", "piped_value")
         .pipe(cmd!("cat"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "piped_value");
 }
 
@@ -622,15 +633,16 @@ fn test_pipe_preserves_env() {
 fn test_and_both_succeed() {
     let text = cmd!("echo", "first")
         .and(cmd!("echo", "second"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     // and returns the output of the last successful command
     assert_eq!(text, "second");
 }
 
 #[test]
 fn test_and_first_fails() {
-    let code = cmd!("false").and(cmd!("echo", "never")).status_code().unwrap();
+    let code = cmd!("false").and(cmd!("echo", "never")).run_exit_code().unwrap();
     assert_ne!(code, 0);
 }
 
@@ -638,8 +650,9 @@ fn test_and_first_fails() {
 fn test_or_first_succeeds() {
     let text = cmd!("echo", "first")
         .or(cmd!("echo", "fallback"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "first");
 }
 
@@ -647,8 +660,9 @@ fn test_or_first_succeeds() {
 fn test_or_first_fails() {
     let text = cmd!("false")
         .or(cmd!("echo", "fallback"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "fallback");
 }
 
@@ -656,8 +670,9 @@ fn test_or_first_fails() {
 fn test_then_runs_regardless() {
     let text = cmd!("false")
         .then(cmd!("echo", "always"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "always");
 }
 
@@ -665,8 +680,9 @@ fn test_then_runs_regardless() {
 fn test_then_first_succeeds() {
     let text = cmd!("true")
         .then(cmd!("echo", "after"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "after");
 }
 
@@ -676,8 +692,9 @@ fn test_chain_complex() {
     let text = cmd!("true")
         .and(cmd!("echo", "a"))
         .or(cmd!("echo", "b"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "a");
 }
 
@@ -687,8 +704,9 @@ fn test_chain_complex_fallback() {
     let text = cmd!("false")
         .and(cmd!("echo", "a"))
         .or(cmd!("echo", "b"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "b");
 }
 
@@ -698,43 +716,43 @@ fn test_chain_complex_fallback() {
 
 #[test]
 fn test_shell_pipe() {
-    let text = shell!("echo hello | tr a-z A-Z").text().unwrap();
+    let text = shell!("echo hello | tr a-z A-Z").run().unwrap().stdout_trimmed();
     assert_eq!(text, "HELLO");
 }
 
 #[test]
 fn test_shell_and() {
-    let text = shell!("echo first && echo second").text().unwrap();
+    let text = shell!("echo first && echo second").run().unwrap().stdout_trimmed();
     assert_eq!(text, "first\nsecond");
 }
 
 #[test]
 fn test_shell_or() {
-    let text = shell!("false || echo fallback").text().unwrap();
+    let text = shell!("false || echo fallback").run().unwrap().stdout_trimmed();
     assert_eq!(text, "fallback");
 }
 
 #[test]
 fn test_shell_semicolon() {
-    let text = shell!("echo a; echo b").text().unwrap();
+    let text = shell!("echo a; echo b").run().unwrap().stdout_trimmed();
     assert_eq!(text, "a\nb");
 }
 
 #[test]
 fn test_shell_subshell() {
-    let text = shell!("(echo sub)").text().unwrap();
+    let text = shell!("(echo sub)").run().unwrap().stdout_trimmed();
     assert_eq!(text, "sub");
 }
 
 #[test]
 fn test_shell_variable() {
-    let text = shell!("VAR=hello; echo $VAR").text().unwrap();
+    let text = shell!("VAR=hello; echo $VAR").run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello");
 }
 
 #[test]
 fn test_shell_export() {
-    let text = shell!("export VAR=hello && echo $VAR").text().unwrap();
+    let text = shell!("export VAR=hello && echo $VAR").run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello");
 }
 
@@ -766,7 +784,7 @@ fn test_shell_redirect_stderr() {
     let dir = temp_dir();
     let path = dir.path().join("err.txt");
     shell!(&format!("echo error 2> {} >&2", path.display()))
-        .stderr_path(&path)
+        .redirect(Stderr, &path)
         .run()
         .unwrap();
     // Use the builder-level stderr redirect instead of shell-level
@@ -774,7 +792,7 @@ fn test_shell_redirect_stderr() {
     let dir2 = temp_dir();
     let path2 = dir2.path().join("err2.txt");
     shell!("echo error >&2")
-        .stderr_path(&path2)
+        .redirect(Stderr, &path2)
         .run()
         .unwrap();
     let content = fs::read_to_string(&path2).unwrap();
@@ -787,32 +805,33 @@ fn test_shell_input_redirect() {
     let path = dir.path().join("input.txt");
     fs::write(&path, "file content").unwrap();
     let text = shell!(&format!("cat < {}", path.display()))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "file content");
 }
 
 #[test]
 fn test_shell_pipe_chain() {
-    let text = shell!("echo '3\n1\n2' | sort | head -n1").text().unwrap();
+    let text = shell!("echo '3\n1\n2' | sort | head -n1").run().unwrap().stdout_trimmed();
     assert_eq!(text, "1");
 }
 
 #[test]
 fn test_shell_heredoc() {
-    let text = shell!("cat <<EOF\nhello\nworld\nEOF").text().unwrap();
+    let text = shell!("cat <<EOF\nhello\nworld\nEOF").run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello\nworld");
 }
 
 #[test]
 fn test_shell_backtick_substitution() {
-    let text = shell!("echo `echo inner`").text().unwrap();
+    let text = shell!("echo `echo inner`").run().unwrap().stdout_trimmed();
     assert_eq!(text, "inner");
 }
 
 #[test]
 fn test_shell_command_substitution() {
-    let text = shell!("echo $(echo inner)").text().unwrap();
+    let text = shell!("echo $(echo inner)").run().unwrap().stdout_trimmed();
     assert_eq!(text, "inner");
 }
 
@@ -822,14 +841,14 @@ fn test_shell_command_substitution() {
 
 #[test]
 fn test_no_throw() {
-    let output = cmd!("false").no_throw().output().unwrap();
-    assert_eq!(output.code, 1);
+    let result = cmd!("false").no_throw().run().unwrap();
+    assert_eq!(result.code, 1);
 }
 
 #[test]
 fn test_no_throw_on_matching() {
-    let output = shell!("exit 42").no_throw_on(&[42]).output().unwrap();
-    assert_eq!(output.code, 42);
+    let result = shell!("exit 42").no_throw_on(&[42]).run().unwrap();
+    assert_eq!(result.code, 42);
 }
 
 #[test]
@@ -881,25 +900,24 @@ fn test_error_cwd_not_found_display() {
 
 #[test]
 fn test_status_code_success() {
-    let code = cmd!("true").status_code().unwrap();
+    let code = cmd!("true").run_exit_code().unwrap();
     assert_eq!(code, 0);
 }
 
 #[test]
 fn test_status_code_failure() {
-    let code = cmd!("false").status_code().unwrap();
+    let code = cmd!("false").run_exit_code().unwrap();
     assert_eq!(code, 1);
 }
 
 #[test]
 fn test_stderr_captured_in_error() {
-    let output = shell!("echo err_msg >&2; exit 1")
-        .stderr_capture()
+    let result = shell!("echo err_msg >&2; exit 1")
         .no_throw()
-        .output()
+        .run()
         .unwrap();
-    assert_eq!(output.code, 1);
-    assert!(output.stderr_text().unwrap().contains("err_msg"));
+    assert_eq!(result.code, 1);
+    assert!(result.stderr_trimmed().contains("err_msg"));
 }
 
 // ============================================================================
@@ -972,8 +990,8 @@ fn test_quiet_stderr() {
 
 #[test]
 fn test_quiet_still_captures() {
-    // When you call .text() it should still capture even with quiet
-    let text = cmd!("echo", "captured").text().unwrap();
+    // When you call .run().stdout_trimmed() it should still capture even with quiet
+    let text = cmd!("echo", "captured").run().unwrap().stdout_trimmed();
     assert_eq!(text, "captured");
 }
 
@@ -986,8 +1004,9 @@ fn test_builder_chaining() {
     let text = Cmd::new("echo")
         .arg("hello")
         .arg("world")
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "hello world");
 }
 
@@ -997,20 +1016,21 @@ fn test_builder_env_and_cwd() {
     let text = shell!("echo $MY_VAR && pwd")
         .env("MY_VAR", "test")
         .cwd(dir.path())
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert!(text.contains("test"));
 }
 
 #[test]
 fn test_cmd_new_with_program() {
-    let text = Cmd::new("echo").arg("test").text().unwrap();
+    let text = Cmd::new("echo").arg("test").run().unwrap().stdout_trimmed();
     assert_eq!(text, "test");
 }
 
 #[test]
 fn test_cmd_parse() {
-    let text = Cmd::parse("echo hello world").text().unwrap();
+    let text = Cmd::parse("echo hello world").run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello world");
 }
 
@@ -1023,8 +1043,9 @@ fn test_pipe_with_env() {
     let text = shell!("echo $MY_VAR")
         .env("MY_VAR", "value")
         .pipe(cmd!("tr", "a-z", "A-Z"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "VALUE");
 }
 
@@ -1034,15 +1055,16 @@ fn test_pipe_to_file() {
     let path = dir.path().join("piped.txt");
     cmd!("echo", "piped output")
         .pipe(cmd!("cat"))
-        .stdout_path(&path)
-        .text()
+        .redirect(Stdout, &path)
+        .run()
         .unwrap();
-    // When using .text(), stdout is captured not written to file
+    // When using .run().stdout_trimmed(), stdout is captured not written to file
     // Let's test differently
     let text = cmd!("echo", "piped output")
         .pipe(cmd!("cat"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "piped output");
 }
 
@@ -1051,8 +1073,9 @@ fn test_stdin_text_pipe_grep() {
     let text = cmd!("cat")
         .stdin_text("apple\nbanana\ncherry")
         .pipe(cmd!("grep", "an"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "banana");
 }
 
@@ -1062,8 +1085,9 @@ fn test_env_in_chained_commands() {
     // But with our current implementation, env is set on the Cmd level
     let text = shell!("echo $VAR")
         .env("VAR", "hello")
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "hello");
 }
 
@@ -1071,7 +1095,7 @@ fn test_env_in_chained_commands() {
 fn test_cwd_with_relative_file() {
     let dir = temp_dir();
     fs::write(dir.path().join("data.txt"), "relative").unwrap();
-    let text = cmd!("cat", "data.txt").cwd(dir.path()).text().unwrap();
+    let text = cmd!("cat", "data.txt").cwd(dir.path()).run().unwrap().stdout_trimmed();
     assert_eq!(text, "relative");
 }
 
@@ -1081,16 +1105,18 @@ fn test_multiple_pipes_with_transform() {
         .pipe(cmd!("tr", " ", "\n"))
         .pipe(cmd!("sort"))
         .pipe(cmd!("head", "-n", "1"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "Hello");
 }
 
 #[test]
 fn test_shell_complex_pipeline() {
     let text = shell!("echo 'one two three' | tr ' ' '\\n' | sort -r | head -1")
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "two");
 }
 
@@ -1104,10 +1130,10 @@ fn test_read_write_cycle() {
     let path = dir.path().join("cycle.txt");
 
     // Write via stdout redirect
-    cmd!("echo", "cycle test").stdout_path(&path).run().unwrap();
+    cmd!("echo", "cycle test").redirect(Stdout, &path).run().unwrap();
 
     // Read via stdin redirect
-    let text = cmd!("cat").stdin_path(&path).text().unwrap();
+    let text = cmd!("cat").stdin_path(&path).run().unwrap().stdout_trimmed();
     assert_eq!(text, "cycle test");
 }
 
@@ -1116,9 +1142,9 @@ fn test_append_multiple_times() {
     let dir = temp_dir();
     let path = dir.path().join("append.txt");
 
-    cmd!("echo", "line1").stdout_path(&path).run().unwrap();
-    cmd!("echo", "line2").stdout_append(&path).run().unwrap();
-    cmd!("echo", "line3").stdout_append(&path).run().unwrap();
+    cmd!("echo", "line1").redirect(Stdout, &path).run().unwrap();
+    cmd!("echo", "line2").redirect(Stdout, Append(&path)).run().unwrap();
+    cmd!("echo", "line3").redirect(Stdout, Append(&path)).run().unwrap();
 
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("line1"));
@@ -1133,8 +1159,8 @@ fn test_stderr_and_stdout_to_different_files() {
     let stderr_path = dir.path().join("stderr.txt");
 
     shell!("echo out; echo err >&2")
-        .stdout_path(&stdout_path)
-        .stderr_path(&stderr_path)
+        .redirect(Stdout, &stdout_path)
+        .redirect(Stderr, &stderr_path)
         .run()
         .unwrap();
 
@@ -1148,14 +1174,14 @@ fn test_stderr_and_stdout_to_different_files() {
 
 #[test]
 fn test_empty_output() {
-    let text = cmd!("true").text().unwrap();
+    let text = cmd!("true").run().unwrap().stdout_trimmed();
     assert_eq!(text, "");
 }
 
 #[test]
 fn test_large_output() {
     // Generate a large output and verify we capture it all
-    let text = shell!("seq 1 10000").text().unwrap();
+    let text = shell!("seq 1 10000").run().unwrap().stdout_trimmed();
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.len(), 10000);
     assert_eq!(lines[0], "1");
@@ -1165,7 +1191,7 @@ fn test_large_output() {
 #[test]
 fn test_large_stdin() {
     let input: String = (1..=10000).map(|i| format!("{}\n", i)).collect();
-    let text = cmd!("wc", "-l").stdin_text(&input).text().unwrap();
+    let text = cmd!("wc", "-l").stdin_text(&input).run().unwrap().stdout_trimmed();
     assert_eq!(text.trim(), "10000");
 }
 
@@ -1175,33 +1201,35 @@ fn test_binary_through_pipe() {
     let bytes = cmd!("cat")
         .stdin_bytes(data.clone())
         .pipe(cmd!("cat"))
-        .bytes()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_bytes()
+        .to_vec();
     assert_eq!(bytes, data);
 }
 
 #[test]
 fn test_unicode_output() {
-    let text = cmd!("echo", "こんにちは世界").text().unwrap();
+    let text = cmd!("echo", "こんにちは世界").run().unwrap().stdout_trimmed();
     assert_eq!(text, "こんにちは世界");
 }
 
 #[test]
 fn test_unicode_arg() {
     let arg = "café résumé naïve";
-    let text = cmd!("echo", arg).text().unwrap();
+    let text = cmd!("echo", arg).run().unwrap().stdout_trimmed();
     assert_eq!(text, "café résumé naïve");
 }
 
 #[test]
 fn test_whitespace_preservation_in_args() {
-    let text = cmd!("echo", "  spaces  ").text().unwrap();
+    let text = cmd!("echo", "  spaces  ").run().unwrap().stdout_trimmed();
     assert_eq!(text, "spaces");
 }
 
 #[test]
 fn test_tab_in_arg() {
-    let text = cmd!("printf", "%s", "a\tb").text().unwrap();
+    let text = cmd!("printf", "%s", "a\tb").run().unwrap().stdout_trimmed();
     assert_eq!(text, "a\tb");
 }
 
@@ -1210,8 +1238,9 @@ fn test_many_args() {
     let args: Vec<String> = (0..100).map(|i| format!("arg{}", i)).collect();
     let text = Cmd::new("echo")
         .args(args.iter().map(|s| s.as_str()))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert!(text.contains("arg0"));
     assert!(text.contains("arg99"));
 }
@@ -1222,7 +1251,7 @@ fn test_many_args() {
 
 #[test]
 fn test_shell_echo() {
-    let text = shell!("echo hello").text().unwrap();
+    let text = shell!("echo hello").run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello");
 }
 
@@ -1231,14 +1260,14 @@ fn test_shell_cat() {
     let dir = temp_dir();
     let path = dir.path().join("cat_test.txt");
     fs::write(&path, "cat content").unwrap();
-    let text = shell!(&format!("cat {}", path.display())).text().unwrap();
+    let text = shell!(&format!("cat {}", path.display())).run().unwrap().stdout_trimmed();
     assert_eq!(text, "cat content");
 }
 
 #[test]
 fn test_shell_pwd() {
     let dir = temp_dir();
-    let text = shell!("pwd").cwd(dir.path()).text().unwrap();
+    let text = shell!("pwd").cwd(dir.path()).run().unwrap().stdout_trimmed();
     let expected = fs::canonicalize(dir.path()).unwrap();
     let actual = fs::canonicalize(PathBuf::from(&text)).unwrap();
     assert_eq!(actual, expected);
@@ -1304,7 +1333,7 @@ fn test_shell_test_file_exists() {
     let path = dir.path().join("exists.txt");
     fs::write(&path, "").unwrap();
     let code = shell!(&format!("test -f {}", path.display()))
-        .status_code()
+        .run_exit_code()
         .unwrap();
     assert_eq!(code, 0);
 }
@@ -1312,7 +1341,7 @@ fn test_shell_test_file_exists() {
 #[test]
 fn test_shell_test_file_not_exists() {
     let code = shell!("test -f /nonexistent_file_xyz")
-        .status_code()
+        .run_exit_code()
         .unwrap();
     assert_ne!(code, 0);
 }
@@ -1321,14 +1350,14 @@ fn test_shell_test_file_not_exists() {
 fn test_shell_test_dir_exists() {
     let dir = temp_dir();
     let code = shell!(&format!("test -d {}", dir.path().display()))
-        .status_code()
+        .run_exit_code()
         .unwrap();
     assert_eq!(code, 0);
 }
 
 #[test]
 fn test_shell_which() {
-    let text = shell!("which echo").text().unwrap();
+    let text = shell!("which echo").run().unwrap().stdout_trimmed();
     assert!(text.contains("echo"));
 }
 
@@ -1336,33 +1365,34 @@ fn test_shell_which() {
 fn test_shell_printenv() {
     let text = shell!("printenv MY_PRINTENV_VAR")
         .env("MY_PRINTENV_VAR", "found_it")
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "found_it");
 }
 
 #[test]
 fn test_shell_true() {
-    let code = shell!("true").status_code().unwrap();
+    let code = shell!("true").run_exit_code().unwrap();
     assert_eq!(code, 0);
 }
 
 #[test]
 fn test_shell_false() {
-    let code = shell!("false").status_code().unwrap();
+    let code = shell!("false").run_exit_code().unwrap();
     assert_eq!(code, 1);
 }
 
 #[test]
 fn test_shell_exit_wraps() {
     // Exit codes are modulo 256
-    let code = shell!("exit 256").status_code().unwrap();
+    let code = shell!("exit 256").run_exit_code().unwrap();
     assert_eq!(code, 0);
 }
 
 #[test]
 fn test_shell_exit_wraps_257() {
-    let code = shell!("exit 257").status_code().unwrap();
+    let code = shell!("exit 257").run_exit_code().unwrap();
     assert_eq!(code, 1);
 }
 
@@ -1381,134 +1411,136 @@ fn test_shell_glob_star() {
     let dir = temp_dir();
     fs::write(dir.path().join("a.txt"), "a").unwrap();
     fs::write(dir.path().join("b.txt"), "b").unwrap();
-    let text = shell!("ls *.txt").cwd(dir.path()).text().unwrap();
+    let text = shell!("ls *.txt").cwd(dir.path()).run().unwrap().stdout_trimmed();
     assert!(text.contains("a.txt"));
     assert!(text.contains("b.txt"));
 }
 
 #[test]
 fn test_shell_tilde_expansion() {
-    let text = shell!("echo ~").text().unwrap();
+    let text = shell!("echo ~").run().unwrap().stdout_trimmed();
     assert!(text.starts_with('/'));
     assert!(!text.contains('~'));
 }
 
 #[test]
 fn test_shell_variable_substitution() {
-    let text = shell!("X=hello; echo $X").text().unwrap();
+    let text = shell!("X=hello; echo $X").run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello");
 }
 
 #[test]
 fn test_shell_variable_in_double_quotes() {
-    let text = shell!("X=hello; echo \"$X world\"").text().unwrap();
+    let text = shell!("X=hello; echo \"$X world\"").run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello world");
 }
 
 #[test]
 fn test_shell_variable_not_in_single_quotes() {
-    let text = shell!("X=hello; echo '$X world'").text().unwrap();
+    let text = shell!("X=hello; echo '$X world'").run().unwrap().stdout_trimmed();
     assert_eq!(text, "$X world");
 }
 
 #[test]
 fn test_shell_negation() {
-    let code = shell!("! false").status_code().unwrap();
+    let code = shell!("! false").run_exit_code().unwrap();
     assert_eq!(code, 0);
 }
 
 #[test]
 fn test_shell_negation_true() {
-    let code = shell!("! true").status_code().unwrap();
+    let code = shell!("! true").run_exit_code().unwrap();
     assert_eq!(code, 1);
 }
 
 #[test]
 fn test_shell_subshell_env_isolation() {
     // Variables set in a subshell should not leak
-    let text = shell!("(X=inner); echo ${X:-outer}").text().unwrap();
+    let text = shell!("(X=inner); echo ${X:-outer}").run().unwrap().stdout_trimmed();
     assert_eq!(text, "outer");
 }
 
 #[test]
 fn test_shell_arithmetic() {
-    let text = shell!("echo $((2 + 3))").text().unwrap();
+    let text = shell!("echo $((2 + 3))").run().unwrap().stdout_trimmed();
     assert_eq!(text, "5");
 }
 
 #[test]
 fn test_shell_for_loop() {
-    let text = shell!("for i in 1 2 3; do echo $i; done").text().unwrap();
+    let text = shell!("for i in 1 2 3; do echo $i; done").run().unwrap().stdout_trimmed();
     assert_eq!(text, "1\n2\n3");
 }
 
 #[test]
 fn test_shell_if_else() {
     let text = shell!("if true; then echo yes; else echo no; fi")
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "yes");
 }
 
 #[test]
 fn test_shell_if_else_false() {
     let text = shell!("if false; then echo yes; else echo no; fi")
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "no");
 }
 
 #[test]
 fn test_shell_while_loop() {
     let text = shell!("i=0; while [ $i -lt 3 ]; do echo $i; i=$((i+1)); done")
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "0\n1\n2");
 }
 
 #[test]
 fn test_shell_case() {
     let text = shell!("X=hello; case $X in hello) echo matched;; *) echo nope;; esac")
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "matched");
 }
 
 // ============================================================================
-// CmdOutput methods
+// CmdResult methods
 // ============================================================================
 
 #[test]
 fn test_output_stdout_json() {
-    let output = cmd!("echo", r#"{"a":1}"#).stdout_capture().output().unwrap();
-    let val: serde_json::Value = output.stdout_json().unwrap();
+    let result = cmd!("echo", r#"{"a":1}"#).run().unwrap();
+    let val: serde_json::Value = result.stdout_json().unwrap();
     assert_eq!(val["a"], 1);
 }
 
 #[test]
 fn test_output_stdout_lines() {
-    let output = shell!("echo line1; echo line2")
-        .stdout_capture()
-        .output()
+    let result = shell!("echo line1; echo line2")
+        .run()
         .unwrap();
-    let lines = output.stdout_lines().unwrap();
+    let lines = result.stdout_lines();
     assert_eq!(lines, vec!["line1", "line2"]);
 }
 
 #[test]
 fn test_output_stdout_text_raw() {
-    let output = cmd!("echo", "hello").stdout_capture().output().unwrap();
-    let raw = output.stdout_text_raw().unwrap();
+    let result = cmd!("echo", "hello").run().unwrap();
+    let raw = result.stdout();
     assert_eq!(raw, "hello\n"); // Not trimmed
 }
 
 #[test]
 fn test_output_stderr_text_raw() {
-    let output = shell!("echo err >&2")
-        .stderr_capture()
-        .output()
+    let result = shell!("echo err >&2")
+        .run()
         .unwrap();
-    let raw = output.stderr_text_raw().unwrap();
+    let raw = result.stderr();
     assert_eq!(raw, "err\n");
 }
 
@@ -1519,8 +1551,8 @@ fn test_output_stderr_text_raw() {
 #[test]
 fn test_independent_commands() {
     // Run multiple commands independently (not chained)
-    let a = cmd!("echo", "a").text().unwrap();
-    let b = cmd!("echo", "b").text().unwrap();
+    let a = cmd!("echo", "a").run().unwrap().stdout_trimmed();
+    let b = cmd!("echo", "b").run().unwrap().stdout_trimmed();
     assert_eq!(a, "a");
     assert_eq!(b, "b");
 }
@@ -1528,11 +1560,12 @@ fn test_independent_commands() {
 #[test]
 fn test_output_reuse() {
     // Use output of one command as input to another
-    let first = cmd!("echo", "hello").text().unwrap();
+    let first = cmd!("echo", "hello").run().unwrap().stdout_trimmed();
     let text = cmd!("echo", &first)
         .pipe(cmd!("tr", "a-z", "A-Z"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "HELLO");
 }
 
@@ -1548,8 +1581,9 @@ fn test_grep_in_files() {
 
     let text = cmd!("grep", "-r", "hello")
         .cwd(dir.path())
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert!(text.contains("hello world"));
     assert!(text.contains("hello rust"));
 }
@@ -1563,8 +1597,9 @@ fn test_find_and_count() {
 
     let text = shell!("find . -name '*.txt' | wc -l")
         .cwd(dir.path())
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text.trim(), "2");
 }
 
@@ -1574,8 +1609,9 @@ fn test_sort_unique() {
         .stdin_text("banana\napple\ncherry\napple\nbanana")
         .pipe(cmd!("sort"))
         .pipe(cmd!("uniq"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "apple\nbanana\ncherry");
 }
 
@@ -1586,8 +1622,9 @@ fn test_head_tail() {
         .stdin_text(input)
         .pipe(cmd!("tail", "-n", "5"))
         .pipe(cmd!("head", "-n", "2"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "6\n7");
 }
 
@@ -1595,8 +1632,9 @@ fn test_head_tail() {
 fn test_sed_transform() {
     let text = cmd!("echo", "hello world")
         .pipe(cmd!("sed", "s/world/rust/"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "hello rust");
 }
 
@@ -1604,8 +1642,9 @@ fn test_sed_transform() {
 fn test_awk_field() {
     let text = cmd!("echo", "one two three")
         .pipe(cmd!("awk", "{print $2}"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "two");
 }
 
@@ -1613,8 +1652,9 @@ fn test_awk_field() {
 fn test_cut_field() {
     let text = cmd!("echo", "a:b:c")
         .pipe(cmd!("cut", "-d:", "-f2"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "b");
 }
 
@@ -1626,8 +1666,9 @@ fn test_xargs() {
 
     let text = shell!("ls *.txt | xargs cat")
         .cwd(dir.path())
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert!(text.contains("content1"));
     assert!(text.contains("content2"));
 }
@@ -1635,13 +1676,13 @@ fn test_xargs() {
 #[test]
 fn test_env_path_lookup() {
     // Verify that commands are found via PATH
-    let text = cmd!("echo", "found").text().unwrap();
+    let text = cmd!("echo", "found").run().unwrap().stdout_trimmed();
     assert_eq!(text, "found");
 }
 
 #[test]
 fn test_absolute_path_command() {
-    let text = Cmd::new("/bin/echo").arg("absolute").text().unwrap();
+    let text = Cmd::new("/bin/echo").arg("absolute").run().unwrap().stdout_trimmed();
     assert_eq!(text, "absolute");
 }
 
@@ -1653,8 +1694,9 @@ fn test_absolute_path_command() {
 fn test_fallback_on_failure() {
     let text = cmd!("false")
         .or(cmd!("echo", "recovered"))
-        .text()
-        .unwrap();
+        .run()
+        .unwrap()
+        .stdout_trimmed();
     assert_eq!(text, "recovered");
 }
 
@@ -1665,18 +1707,18 @@ fn test_check_then_act() {
     fs::write(&path, "exists").unwrap();
 
     let code = shell!(&format!("test -f {}", path.display()))
-        .status_code()
+        .run_exit_code()
         .unwrap();
     if code == 0 {
-        let text = cmd!("cat").stdin_path(&path).text().unwrap();
+        let text = cmd!("cat").stdin_path(&path).run().unwrap().stdout_trimmed();
         assert_eq!(text, "exists");
     }
 }
 
 #[test]
 fn test_no_throw_then_check() {
-    let output = shell!("exit 42").no_throw().output().unwrap();
-    assert_eq!(output.code, 42);
+    let result = shell!("exit 42").no_throw().run().unwrap();
+    assert_eq!(result.code, 42);
 }
 
 // ============================================================================
@@ -1718,8 +1760,14 @@ fn test_glob_double_star() {
 fn test_glob_no_matches() {
     let dir = temp_dir();
     let pattern = format!("{}/*.nonexistent", dir.path().display());
-    let files = glob(&pattern).unwrap();
-    assert!(files.is_empty());
+    let result = glob(&pattern);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        CmdError::GlobNoMatches { pattern: p } => {
+            assert!(p.contains("nonexistent"));
+        }
+        other => panic!("Expected GlobNoMatches, got: {:?}", other),
+    }
 }
 
 #[test]
@@ -1780,7 +1828,7 @@ fn test_glob_with_cmd() {
         .map(|p| p.to_string_lossy().to_string())
         .collect();
     assert_eq!(files.len(), 1);
-    let text = cmd!("cat", files).text().unwrap();
+    let text = cmd!("cat", files).run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello from file");
 }
 
@@ -1796,7 +1844,7 @@ fn test_glob_with_shell() {
         .into_iter()
         .map(|p| p.to_string_lossy().to_string())
         .collect();
-    let text = shell!("cat", files).text().unwrap();
+    let text = shell!("cat", files).run().unwrap().stdout_trimmed();
     assert!(text.contains("aaa"));
     assert!(text.contains("bbb"));
 }
@@ -1827,33 +1875,117 @@ fn test_glob_deeply_nested() {
 }
 
 // ============================================================================
+// Cmd::glob() builder method
+// ============================================================================
+
+#[test]
+fn test_cmd_glob_method() {
+    let dir = temp_dir();
+    fs::write(dir.path().join("a.txt"), "aaa").unwrap();
+    fs::write(dir.path().join("b.txt"), "bbb").unwrap();
+
+    let pattern = format!("{}/*.txt", dir.path().display());
+    let text = Cmd::new("cat")
+        .glob(&pattern)
+        .run()
+        .unwrap()
+        .stdout_trimmed();
+    assert!(text.contains("aaa"));
+    assert!(text.contains("bbb"));
+}
+
+#[test]
+fn test_cmd_glob_method_no_matches() {
+    let dir = temp_dir();
+    let pattern = format!("{}/*.nonexistent", dir.path().display());
+    let result = Cmd::new("echo")
+        .glob(&pattern)
+        .run();
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_cmd_glob_method_with_arg() {
+    let dir = temp_dir();
+    fs::write(dir.path().join("x.txt"), "").unwrap();
+
+    let pattern = format!("{}/*.txt", dir.path().display());
+    let text = Cmd::new("echo")
+        .arg("hello")
+        .glob(&pattern)
+        .run()
+        .unwrap()
+        .stdout_trimmed();
+    assert!(text.starts_with("hello "));
+    assert!(text.contains("x.txt"));
+}
+
+#[test]
+fn test_cmd_glob_invalid_pattern() {
+    let result = Cmd::new("echo")
+        .glob("[invalid")
+        .run();
+    assert!(result.is_err());
+}
+
+// ============================================================================
+// Glob results used directly in shell! interpolation
+// ============================================================================
+
+#[test]
+fn test_glob_direct_in_shell_interpolation() {
+    let dir = temp_dir();
+    fs::write(dir.path().join("a.txt"), "aaa").unwrap();
+    fs::write(dir.path().join("b.txt"), "bbb").unwrap();
+
+    let pattern = format!("{}/*.txt", dir.path().display());
+    let files = glob(&pattern).unwrap();
+    let text = shell!("cat {files}").run().unwrap().stdout_trimmed();
+    assert!(text.contains("aaa"));
+    assert!(text.contains("bbb"));
+}
+
+#[test]
+fn test_glob_direct_in_cmd() {
+    let dir = temp_dir();
+    fs::write(dir.path().join("a.txt"), "aaa").unwrap();
+    fs::write(dir.path().join("b.txt"), "bbb").unwrap();
+
+    let pattern = format!("{}/*.txt", dir.path().display());
+    let files = glob(&pattern).unwrap();
+    let text = cmd!("cat", files).run().unwrap().stdout_trimmed();
+    assert!(text.contains("aaa"));
+    assert!(text.contains("bbb"));
+}
+
+// ============================================================================
 // Vector arguments with cmd! and shell!
 // ============================================================================
 
 #[test]
 fn test_cmd_vec_args() {
     let items = vec!["hello", "world"];
-    let text = cmd!("echo", items).text().unwrap();
+    let text = cmd!("echo", items).run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello world");
 }
 
 #[test]
 fn test_cmd_vec_string_args() {
     let items: Vec<String> = vec!["hello".to_string(), "world".to_string()];
-    let text = cmd!("echo", items).text().unwrap();
+    let text = cmd!("echo", items).run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello world");
 }
 
 #[test]
 fn test_cmd_slice_args() {
     let items: &[&str] = &["hello", "world"];
-    let text = cmd!("echo", items).text().unwrap();
+    let text = cmd!("echo", items).run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello world");
 }
 
 #[test]
 fn test_cmd_array_args() {
-    let text = cmd!("echo", ["hello", "world"]).text().unwrap();
+    let text = cmd!("echo", ["hello", "world"]).run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello world");
 }
 
@@ -1861,21 +1993,21 @@ fn test_cmd_array_args() {
 fn test_cmd_vec_with_spaces() {
     // Each element should be a separate arg, spaces preserved
     let items = vec!["hello world", "foo bar"];
-    let text = cmd!("echo", items).text().unwrap();
+    let text = cmd!("echo", items).run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello world foo bar");
 }
 
 #[test]
 fn test_cmd_mixed_scalar_and_vec() {
     let files = vec!["b.txt", "c.txt"];
-    let text = cmd!("echo", "a.txt", files, "d.txt").text().unwrap();
+    let text = cmd!("echo", "a.txt", files, "d.txt").run().unwrap().stdout_trimmed();
     assert_eq!(text, "a.txt b.txt c.txt d.txt");
 }
 
 #[test]
 fn test_cmd_empty_vec() {
     let items: Vec<&str> = vec![];
-    let text = cmd!("echo", "hello", items).text().unwrap();
+    let text = cmd!("echo", "hello", items).run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello");
 }
 
@@ -1884,14 +2016,14 @@ fn test_cmd_pathbuf_vec() {
     let paths = vec![PathBuf::from("a.txt"), PathBuf::from("b.txt")];
     let text = cmd!("echo").push_args(
         paths.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>()
-    ).text().unwrap();
+    ).run().unwrap().stdout_trimmed();
     assert_eq!(text, "a.txt b.txt");
 }
 
 #[test]
 fn test_shell_vec_args() {
     let items = vec!["hello", "world"];
-    let text = shell!("echo", items).text().unwrap();
+    let text = shell!("echo", items).run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello world");
 }
 
@@ -1899,7 +2031,7 @@ fn test_shell_vec_args() {
 fn test_shell_vec_with_spaces() {
     // Each element should be shell-escaped
     let items = vec!["hello world", "foo bar"];
-    let text = shell!("echo", items).text().unwrap();
+    let text = shell!("echo", items).run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello world foo bar");
 }
 
@@ -1907,35 +2039,35 @@ fn test_shell_vec_with_spaces() {
 fn test_shell_vec_with_special_chars() {
     // Shell special chars in vec elements should be escaped
     let items = vec!["$HOME", "$(whoami)"];
-    let text = shell!("echo", items).text().unwrap();
+    let text = shell!("echo", items).run().unwrap().stdout_trimmed();
     assert_eq!(text, "$HOME $(whoami)");
 }
 
 #[test]
 fn test_shell_mixed_scalar_and_vec() {
     let flags = vec!["--verbose", "--all"];
-    let text = shell!("echo start", flags, "end").text().unwrap();
+    let text = shell!("echo start", flags, "end").run().unwrap().stdout_trimmed();
     assert_eq!(text, "start --verbose --all end");
 }
 
 #[test]
 fn test_shell_empty_vec() {
     let items: Vec<&str> = vec![];
-    let text = shell!("echo hello", items).text().unwrap();
+    let text = shell!("echo hello", items).run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello");
 }
 
 #[test]
 fn test_shell_string_vec() {
     let items: Vec<String> = vec!["one".to_string(), "two".to_string()];
-    let text = shell!("echo", items).text().unwrap();
+    let text = shell!("echo", items).run().unwrap().stdout_trimmed();
     assert_eq!(text, "one two");
 }
 
 #[test]
 fn test_shell_single_quote_in_vec() {
     let items = vec!["it's", "fine"];
-    let text = shell!("echo", items).text().unwrap();
+    let text = shell!("echo", items).run().unwrap().stdout_trimmed();
     assert_eq!(text, "it's fine");
 }
 
@@ -1943,7 +2075,7 @@ fn test_shell_single_quote_in_vec() {
 fn test_shell_vec_prevents_injection() {
     // Even in shell!, vector args should be escaped and safe
     let evil = vec!["hello; rm -rf /"];
-    let text = shell!("echo", evil).text().unwrap();
+    let text = shell!("echo", evil).run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello; rm -rf /");
 }
 
@@ -1951,7 +2083,7 @@ fn test_shell_vec_prevents_injection() {
 fn test_cmd_vec_as_argv_passthrough() {
     // Simulating passing part of argv through to a command
     let user_args = vec!["-l", "-a", "/tmp"];
-    let text = cmd!("ls", user_args).text().unwrap();
+    let text = cmd!("ls", user_args).run().unwrap().stdout_trimmed();
     assert!(text.len() > 0);
 }
 
@@ -1959,21 +2091,21 @@ fn test_cmd_vec_as_argv_passthrough() {
 fn test_shell_vec_as_argv_passthrough() {
     // Simulating passing part of argv through to a shell command
     let user_args = vec!["-l", "-a"];
-    let text = shell!("ls", user_args, "/tmp").text().unwrap();
+    let text = shell!("ls", user_args, "/tmp").run().unwrap().stdout_trimmed();
     assert!(text.len() > 0);
 }
 
 #[test]
 fn test_push_args_vec_str() {
     let args = vec!["a", "b", "c"];
-    let text = Cmd::new("echo").push_args(args).text().unwrap();
+    let text = Cmd::new("echo").push_args(args).run().unwrap().stdout_trimmed();
     assert_eq!(text, "a b c");
 }
 
 #[test]
 fn test_push_args_slice() {
     let args: &[&str] = &["a", "b", "c"];
-    let text = Cmd::new("echo").push_args(args).text().unwrap();
+    let text = Cmd::new("echo").push_args(args).run().unwrap().stdout_trimmed();
     assert_eq!(text, "a b c");
 }
 
@@ -2136,21 +2268,21 @@ fn test_run_with_tail_long_lines() {
 #[test]
 fn test_shell_interpolation_basic() {
     let name = "hello";
-    let text = shell!("echo {name}").text().unwrap();
+    let text = shell!("echo {name}").run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello");
 }
 
 #[test]
 fn test_shell_interpolation_with_spaces() {
     let name = "hello world";
-    let text = shell!("echo {name}").text().unwrap();
+    let text = shell!("echo {name}").run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello world");
 }
 
 #[test]
 fn test_shell_interpolation_with_pipe() {
     let name = "hello";
-    let text = shell!("echo {name} | tr a-z A-Z").text().unwrap();
+    let text = shell!("echo {name} | tr a-z A-Z").run().unwrap().stdout_trimmed();
     assert_eq!(text, "HELLO");
 }
 
@@ -2158,7 +2290,7 @@ fn test_shell_interpolation_with_pipe() {
 fn test_shell_interpolation_multiple_vars() {
     let a = "hello";
     let b = "world";
-    let text = shell!("echo {a} {b}").text().unwrap();
+    let text = shell!("echo {a} {b}").run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello world");
 }
 
@@ -2166,35 +2298,35 @@ fn test_shell_interpolation_multiple_vars() {
 fn test_shell_interpolation_prevents_injection() {
     // Special shell characters should be escaped
     let name = "hello; rm -rf /";
-    let text = shell!("echo {name}").text().unwrap();
+    let text = shell!("echo {name}").run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello; rm -rf /");
 }
 
 #[test]
 fn test_shell_interpolation_with_single_quotes() {
     let name = "it's";
-    let text = shell!("echo {name}").text().unwrap();
+    let text = shell!("echo {name}").run().unwrap().stdout_trimmed();
     assert_eq!(text, "it's");
 }
 
 #[test]
 fn test_shell_interpolation_with_dollar_sign() {
     let val = "$HOME";
-    let text = shell!("echo {val}").text().unwrap();
+    let text = shell!("echo {val}").run().unwrap().stdout_trimmed();
     assert_eq!(text, "$HOME");
 }
 
 #[test]
 fn test_shell_interpolation_empty_string() {
     let name = "";
-    let text = shell!("echo {name}end").text().unwrap();
+    let text = shell!("echo {name}end").run().unwrap().stdout_trimmed();
     assert_eq!(text, "end");
 }
 
 #[test]
 fn test_shell_interpolation_same_var_twice() {
     let x = "hi";
-    let text = shell!("echo {x} {x}").text().unwrap();
+    let text = shell!("echo {x} {x}").run().unwrap().stdout_trimmed();
     assert_eq!(text, "hi hi");
 }
 
@@ -2202,42 +2334,42 @@ fn test_shell_interpolation_same_var_twice() {
 fn test_shell_interpolation_coexists_with_shell_vars() {
     // Shell $VAR syntax should still work alongside {var} interpolation
     let greeting = "hello";
-    let text = shell!("X=world; echo {greeting} $X").text().unwrap();
+    let text = shell!("X=world; echo {greeting} $X").run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello world");
 }
 
 #[test]
 fn test_shell_interpolation_with_shell_brace_var() {
     // ${VAR} shell syntax should NOT be treated as interpolation
-    let text = shell!("X=hello; echo ${X}").text().unwrap();
+    let text = shell!("X=hello; echo ${X}").run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello");
 }
 
 #[test]
 fn test_shell_interpolation_with_shell_default_var() {
     // ${VAR:-default} shell syntax should still work
-    let text = shell!("echo ${NONEXISTENT:-fallback}").text().unwrap();
+    let text = shell!("echo ${NONEXISTENT:-fallback}").run().unwrap().stdout_trimmed();
     assert_eq!(text, "fallback");
 }
 
 #[test]
 fn test_shell_interpolation_vec() {
     let files = vec!["file one.txt", "file two.txt"];
-    let text = shell!("echo {files}").text().unwrap();
+    let text = shell!("echo {files}").run().unwrap().stdout_trimmed();
     assert_eq!(text, "file one.txt file two.txt");
 }
 
 #[test]
 fn test_shell_interpolation_vec_with_special_chars() {
     let args = vec!["hello world", "it's", "a;b"];
-    let text = shell!("echo {args}").text().unwrap();
+    let text = shell!("echo {args}").run().unwrap().stdout_trimmed();
     assert_eq!(text, "hello world it's a;b");
 }
 
 #[test]
 fn test_shell_interpolation_vec_single_element() {
     let items = vec!["only"];
-    let text = shell!("echo {items}").text().unwrap();
+    let text = shell!("echo {items}").run().unwrap().stdout_trimmed();
     assert_eq!(text, "only");
 }
 
@@ -2245,6 +2377,74 @@ fn test_shell_interpolation_vec_single_element() {
 fn test_shell_interpolation_mixed_scalar_and_vec() {
     let prefix = "start";
     let items = vec!["a", "b", "c"];
-    let text = shell!("echo {prefix} {items}").text().unwrap();
+    let text = shell!("echo {prefix} {items}").run().unwrap().stdout_trimmed();
     assert_eq!(text, "start a b c");
 }
+
+// ============================================================================
+// Shell inline {glob("...")} syntax
+// ============================================================================
+
+#[test]
+fn test_shell_inline_glob_matches() {
+    // Use a glob that matches files in this repo
+    let text = shell!("echo {glob(\"src/*.rs\")}").run().unwrap().stdout_trimmed();
+    // Should contain at least lib.rs and cmd.rs
+    assert!(text.contains("src/lib.rs"));
+    assert!(text.contains("src/cmd.rs"));
+}
+
+#[test]
+fn test_shell_inline_glob_no_matches_deferred() {
+    // Glob error should be deferred until execution
+    let result = shell!("echo {glob(\"/nonexistent_dir_xyz_99999/*.txt\")}").run();
+    assert!(result.is_err());
+}
+
+// ============================================================================
+// Shell inline {flag_if("...", var)} syntax
+// ============================================================================
+
+#[test]
+fn test_shell_flag_if_true() {
+    let verbose = true;
+    let text = shell!("echo hello {flag_if(\"-v\", verbose)} world").run().unwrap().stdout_trimmed();
+    assert!(text.contains("-v"));
+    assert!(text.contains("hello"));
+    assert!(text.contains("world"));
+}
+
+#[test]
+fn test_shell_flag_if_false() {
+    let verbose = false;
+    let text = shell!("echo hello {flag_if(\"-v\", verbose)} world").run().unwrap().stdout_trimmed();
+    assert!(!text.contains("-v"));
+    assert!(text.contains("hello"));
+    assert!(text.contains("world"));
+}
+
+#[test]
+fn test_shell_flag_if_multiple() {
+    let verbose = true;
+    let recursive = false;
+    let text = shell!("echo {flag_if(\"-v\", verbose)} {flag_if(\"-r\", recursive)} done")
+        .run()
+        .unwrap()
+        .stdout_trimmed();
+    assert!(text.contains("-v"));
+    assert!(!text.contains("-r"));
+    assert!(text.contains("done"));
+}
+
+#[test]
+fn test_shell_flag_if_with_interpolation() {
+    let verbose = true;
+    let name = "hello";
+    let text = shell!("echo {name} {flag_if(\"--loud\", verbose)}")
+        .run()
+        .unwrap()
+        .stdout_trimmed();
+    assert!(text.contains("hello"));
+    assert!(text.contains("--loud"));
+}
+

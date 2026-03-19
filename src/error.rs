@@ -37,6 +37,10 @@ pub enum CmdError {
     BrokenPipe {
         upstream_code: i32,
     },
+    /// Glob pattern matched zero files.
+    GlobNoMatches {
+        pattern: String,
+    },
 }
 
 impl fmt::Display for CmdError {
@@ -72,6 +76,9 @@ impl fmt::Display for CmdError {
                     f,
                     "Stdin pipe broken. Upstream exited with code: {upstream_code}"
                 )
+            }
+            CmdError::GlobNoMatches { pattern } => {
+                write!(f, "Glob pattern matched zero files: {pattern}")
             }
         }
     }

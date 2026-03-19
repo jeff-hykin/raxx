@@ -116,10 +116,28 @@ shell!("cat {files} | wc -l").run()?;
 let greeting = "hello";
 shell!("X=world; echo {greeting} $X").run()?;
 // prints: hello world
+
+// Inline glob expansion — matched files are escaped and inserted
+shell!("wc -l {glob(\"src/**/*.rs\")}").run()?;
+// Expands to something like: /bin/sh -c "wc -l src/cmd.rs src/lib.rs ..."
+
+// Optional flags based on a boolean
+let verbose = true;
+shell!("grep -r {flag_if(\"-v\", verbose)} pattern src/").run()?;
+// When verbose=true: grep -r -v pattern src/
+// When verbose=false: grep -r  pattern src/
 ```
 
 The literal parts of the format string (outside `{var}` placeholders) are passed
 to the shell as-is, so pipes, redirects, and shell features work normally.
+
+### Inline Functions in `shell!`
+
+The `shell!` macro supports two inline function calls inside `{...}` placeholders:
+
+- **`{glob("pattern")}`** — Expands a glob pattern at runtime. Matched files are shell-escaped and inserted. If the glob matches nothing or encounters an error, the error is deferred until the command is executed (`.run()?`), keeping the builder chain intact.
+
+- **`{flag_if("flag", condition)}`** — Conditionally inserts a flag. If `condition` is `true`, the flag is shell-escaped and inserted; if `false`, nothing is inserted.
 
 ## Vector Arguments
 
@@ -155,9 +173,10 @@ shell!("echo", evil).run()?;
 ## Glob
 
 Find files matching `*`, `**`, `?`, and `[...]` patterns. Results are sorted.
+Returns an error on permission failures or when zero files match.
 
 ```rust
-use raxx::{cmd, glob, shell};
+use raxx::{cmd, glob, shell, Cmd};
 
 // All .txt files in a directory
 let files = glob("docs/*.txt")?;
@@ -165,19 +184,19 @@ let files = glob("docs/*.txt")?;
 // Recursive — all .rs files under src/
 let files = glob("src/**/*.rs")?;
 
-// Use glob results with cmd!
-let files: Vec<String> = glob("src/**/*.rs")?
-    .into_iter()
-    .map(|p| p.to_string_lossy().to_string())
-    .collect();
+// Use glob results directly with cmd! — no .collect() needed
+let files = glob("src/**/*.rs")?;
 cmd!("wc", "-l", files).run()?;
 
-// Use glob results with shell!
-let files: Vec<String> = glob("tests/**/*.rs")?
-    .into_iter()
-    .map(|p| p.to_string_lossy().to_string())
-    .collect();
-shell!("cat", files).pipe(cmd!("wc", "-l")).run()?;
+// Use glob results directly with shell! interpolation
+let files = glob("tests/**/*.rs")?;
+shell!("cat {files}").pipe(cmd!("wc", "-l")).run()?;
+
+// Use .glob() on the builder — errors are deferred to execution time
+let text = Cmd::new("echo")
+    .arg("hello")
+    .glob("people/*")
+    .text()?;
 ```
 
 ## Capturing Output
@@ -554,6 +573,7 @@ The `.output()` method returns a `CmdOutput` struct with full access to exit cod
 | `NotFound { program }` | Program not in PATH |
 | `CwdNotFound { path }` | Working directory doesn't exist |
 | `BrokenPipe { upstream_code }` | Upstream pipe command failed |
+| `GlobNoMatches { pattern }` | Glob matched zero files |
 
 `CmdError` implements `Display`, `Debug`, `Error`, and `From` conversions for `io::Error`, `FromUtf8Error`, and `serde_json::Error`.
 
@@ -567,6 +587,8 @@ The `.output()` method returns a `CmdOutput` struct with full access to exit cod
 | `cmd!("prog", vec)` | Vector elements are flattened into separate args |
 | `shell!("cmd string")` | Shell command via `/bin/sh -c` |
 | `shell!("cmd", arg1, vec)` | Extra args are shell-escaped and appended |
+| `shell!("... {glob(\"pat\")} ...")` | Inline glob expansion (deferred errors) |
+| `shell!("... {flag_if(\"f\", b)} ...")` | Conditional flag insertion |
 
 ### Functions
 
@@ -585,6 +607,7 @@ The `.output()` method returns a `CmdOutput` struct with full access to exit cod
 | **Args** | `.arg(val)` | Append one argument |
 | | `.args(iter)` | Append multiple arguments from iterator |
 | | `.push_args(val_or_vec)` | Append scalar or flatten vector |
+| | `.glob(pattern)` | Expand glob and append matched files |
 | **Env** | `.env(key, val)` | Set env var |
 | | `.envs(pairs)` | Set multiple env vars |
 | | `.env_remove(key)` | Remove env var |
