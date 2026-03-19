@@ -1,6 +1,6 @@
 # Raxx
 
-Ergonomic macros +  builder API for shell commands. Inspired by [dax](https://github.com/dsherret/dax), synchronous, Unix-only.
+Ergonomic macros +  builder API for shell commands. Inspired by [dax](https://github.com/dsherret/dax). Synchronous. Unix-only.
 
 ## Quick Start
 
