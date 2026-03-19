@@ -620,8 +620,12 @@ impl CmdInner {
 
 /// A command builder with type-state tracking of stream configuration.
 ///
-/// `O` tracks stdout: [`Captured`] (default) or [`Redirected`].
-/// `E` tracks stderr: [`Captured`] (default) or [`Redirected`].
+/// `O` tracks stdout: [`Captured`] (not redirected, default) or [`Redirected`].
+/// `E` tracks stderr: [`Captured`] (not redirected, default) or [`Redirected`].
+///
+/// By default, stdout and stderr are **forwarded to the terminal** (inherited
+/// from the parent process). Use [`.capture()`](Cmd::capture) or convenience
+/// methods like [`run_stdout`](Cmd::run_stdout) to capture output into memory.
 ///
 /// Created via [`cmd!`](crate::cmd!), [`shell!`](crate::shell!),
 /// [`Cmd::new`], [`Cmd::parse`], or [`Cmd::shell`].
@@ -1047,10 +1051,8 @@ impl<O, E> Cmd<O, E> {
         }
 
         if let Some(pipeline) = self.inner.pipeline.take() {
-            let capture_stdout =
-                matches!(self.inner.stdout, OutputConfig::Inherit | OutputConfig::Capture);
-            let capture_stderr =
-                matches!(self.inner.stderr, OutputConfig::Inherit | OutputConfig::Capture);
+            let capture_stdout = matches!(self.inner.stdout, OutputConfig::Capture);
+            let capture_stderr = matches!(self.inner.stderr, OutputConfig::Capture);
             let result = pipeline.execute(capture_stdout, capture_stderr);
             let no_throw = matches!(self.inner.throw, ThrowBehavior::NoThrow);
             match result {
@@ -1063,20 +1065,16 @@ impl<O, E> Cmd<O, E> {
                 Err(e) => Err(e),
             }
         } else {
-            // Auto-capture non-redirected streams
-            if matches!(self.inner.stdout, OutputConfig::Inherit) {
-                self.inner.stdout = OutputConfig::Capture;
-            }
-            if matches!(self.inner.stderr, OutputConfig::Inherit) {
-                self.inner.stderr = OutputConfig::Capture;
-            }
             self.inner.execute_inner()
         }
     }
 
     /// Execute the command and return the full result.
     ///
-    /// Non-redirected streams are automatically captured.
+    /// By default, stdout and stderr are forwarded to the terminal (not
+    /// captured). Use [`.capture()`](Cmd::capture) before `.run()` to
+    /// capture them, or use [`run_stdout`](Cmd::run_stdout) /
+    /// [`run_out`](Cmd::run_out) which auto-capture.
     pub fn run(self) -> Result<CmdResult<O, E>> {
         let raw = self.execute_to_raw()?;
         Ok(CmdResult::from_raw(raw))
@@ -1115,21 +1113,62 @@ impl<O, E> Cmd<O, E> {
     pub fn run_ignore_code(self) -> Result<CmdResult<O, E>> {
         self.run_no_exit_err()
     }
+
+    /// Execute the command, swallowing all errors silently.
+    ///
+    /// Always returns a [`CmdResult`] — never panics, never returns `Err`.
+    /// If the command fails for any reason (not found, bad exit code, IO error,
+    /// etc.), returns a stub result with `code = -1` and empty output.
+    ///
+    /// ```no_run
+    /// use raxx::cmd;
+    ///
+    /// // No ? or unwrap needed
+    /// let result = cmd!("rm", "maybe.txt").run_and_forget();
+    /// ```
+    pub fn run_and_forget(self) -> CmdResult<O, E> {
+        let result = self.no_err().run();
+        // no_err guarantees Ok, but handle defensively
+        match result {
+            Ok(r) => r,
+            Err(_) => CmdResult::from_raw(RawOutput {
+                code: -1,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            }),
+        }
+    }
 }
 
 // ── Stdout-specific methods (O = Captured) ──
 
 impl<E> Cmd<Captured, E> {
     /// Execute and return stdout as an untrimmed string.
+    ///
+    /// Automatically captures stdout (even though the default is to forward
+    /// to the terminal).
     pub fn run_stdout(self) -> Result<String> {
-        let result = self.run()?;
+        let result = self.capture_stdout().run()?;
         Ok(result.stdout())
     }
 
     /// Execute and parse stdout as JSON.
+    ///
+    /// Automatically captures stdout.
     pub fn run_stdout_json<T: serde::de::DeserializeOwned>(self) -> Result<T> {
-        let result = self.run()?;
+        let result = self.capture_stdout().run()?;
         result.stdout_json()
+    }
+
+    /// Explicitly capture stdout into memory so it's available on the result.
+    ///
+    /// By default stdout is forwarded to the terminal. Call this (or use
+    /// [`run_stdout`](Cmd::run_stdout)) to capture it.
+    pub fn capture_stdout(mut self) -> Self {
+        if matches!(self.inner.stdout, OutputConfig::Inherit) {
+            self.inner.stdout = OutputConfig::Capture;
+        }
+        self
     }
 
     /// Suppress stdout (redirect to `/dev/null`).
@@ -1142,15 +1181,30 @@ impl<E> Cmd<Captured, E> {
 
 impl<O> Cmd<O, Captured> {
     /// Execute and return stderr as an untrimmed string.
+    ///
+    /// Automatically captures stderr.
     pub fn run_stderr(self) -> Result<String> {
-        let result = self.run()?;
+        let result = self.capture_stderr().run()?;
         Ok(result.stderr())
     }
 
     /// Execute and parse stderr as JSON.
+    ///
+    /// Automatically captures stderr.
     pub fn run_stderr_json<T: serde::de::DeserializeOwned>(self) -> Result<T> {
-        let result = self.run()?;
+        let result = self.capture_stderr().run()?;
         result.stderr_json()
+    }
+
+    /// Explicitly capture stderr into memory so it's available on the result.
+    ///
+    /// By default stderr is forwarded to the terminal. Call this (or use
+    /// [`run_stderr`](Cmd::run_stderr)) to capture it.
+    pub fn capture_stderr(mut self) -> Self {
+        if matches!(self.inner.stderr, OutputConfig::Inherit) {
+            self.inner.stderr = OutputConfig::Capture;
+        }
+        self
     }
 
     /// Suppress stderr (redirect to `/dev/null`).
@@ -1163,9 +1217,36 @@ impl<O> Cmd<O, Captured> {
 
 impl Cmd<Captured, Captured> {
     /// Execute and return stdout + stderr concatenated.
+    ///
+    /// Automatically captures both streams.
     pub fn run_out(self) -> Result<String> {
-        let result = self.run()?;
+        let result = self.capture().run()?;
         Ok(result.out())
+    }
+
+    /// Explicitly capture both stdout and stderr into memory.
+    ///
+    /// By default both streams are forwarded to the terminal. Call this
+    /// before [`.run()`](Cmd::run) to make stdout/stderr data available
+    /// on the result.
+    ///
+    /// ```no_run
+    /// use raxx::cmd;
+    ///
+    /// # fn main() -> raxx::Result<()> {
+    /// let result = cmd!("echo", "hello").capture().run()?;
+    /// println!("{}", result.stdout_trimmed());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn capture(mut self) -> Self {
+        if matches!(self.inner.stdout, OutputConfig::Inherit) {
+            self.inner.stdout = OutputConfig::Capture;
+        }
+        if matches!(self.inner.stderr, OutputConfig::Inherit) {
+            self.inner.stderr = OutputConfig::Capture;
+        }
+        self
     }
 
     /// Suppress both stdout and stderr (redirect to `/dev/null`).

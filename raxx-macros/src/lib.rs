@@ -39,12 +39,20 @@ impl Parse for ShellInput {
     }
 }
 
-/// A glob call found in the format string, e.g. `{glob("**/*.rs")}`.
+/// The source of a glob pattern — either a string literal or a variable name.
+enum GlobPattern {
+    /// A literal pattern string, e.g. `"**/*.rs"`.
+    Literal(String),
+    /// A variable name that holds the pattern, e.g. `my_pattern`.
+    Variable(String),
+}
+
+/// A glob call found in the format string, e.g. `{glob("**/*.rs")}` or `{glob(pattern_var)}`.
 struct GlobCall {
     /// Synthetic variable name, e.g. `__raxx_glob_0`.
     var_name: String,
-    /// The glob pattern string, e.g. `**/*.rs`.
-    pattern: String,
+    /// The glob pattern source.
+    pattern: GlobPattern,
 }
 
 /// A flag_if call found in the format string, e.g. `{flag_if("-v", verbose)}`.
@@ -140,17 +148,20 @@ fn extract_inline_calls(s: &str) -> InlineCalls {
     }
 }
 
-/// Try to parse `glob("pattern")` or `glob('pattern')` from a brace-content string.
-fn parse_glob_call(s: &str) -> Option<String> {
+/// Try to parse `glob("pattern")`, `glob('pattern')`, or `glob(var_name)` from a brace-content string.
+fn parse_glob_call(s: &str) -> Option<GlobPattern> {
     let s = s.trim();
     let rest = s.strip_prefix("glob(")?;
     let rest = rest.strip_suffix(')')?;
     let rest = rest.trim();
-    // Accept "..." or '...'
+    // Accept "..." or '...' as a literal pattern
     if (rest.starts_with('"') && rest.ends_with('"'))
         || (rest.starts_with('\'') && rest.ends_with('\''))
     {
-        Some(rest[1..rest.len() - 1].to_string())
+        Some(GlobPattern::Literal(rest[1..rest.len() - 1].to_string()))
+    } else if is_rust_ident(rest) {
+        // Accept a bare identifier as a variable reference
+        Some(GlobPattern::Variable(rest.to_string()))
     } else {
         None
     }
@@ -449,9 +460,15 @@ fn generate_interpolation_mode(
         .map(|g| {
             let var_ident = syn::Ident::new(&g.var_name, fmt_str.span());
             let err_ident = syn::Ident::new(&format!("{}_err", g.var_name), fmt_str.span());
-            let pattern = &g.pattern;
+            let glob_arg: TokenStream2 = match &g.pattern {
+                GlobPattern::Literal(s) => quote! { #s },
+                GlobPattern::Variable(name) => {
+                    let ident = syn::Ident::new(name, fmt_str.span());
+                    quote! { &#ident }
+                }
+            };
             quote! {
-                let (#var_ident, #err_ident) = match ::raxx::glob(#pattern) {
+                let (#var_ident, #err_ident) = match ::raxx::glob(#glob_arg) {
                     Ok(files) => (::raxx::EscapeForShell::escape_for_shell(&files), None),
                     Err(e) => (::std::string::String::new(), Some(::std::format!("{e}"))),
                 };

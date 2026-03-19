@@ -44,16 +44,16 @@ let text = shell!("grep -r {args} src/")
     .pipe(cmd!("head", "-5"))
     .run_stdout()?;
 
+// redirect stdout to file, stderr to /dev/null
+cmd!("cargo", "build")
+    .redirect(Stdout, "build.log")
+    .redirect(Stderr, Null)
+    .run()?;
+
 // Timeout: sends SIGTERM, then SIGKILL after 5s grace period
 cmd!("sleep", "60")
     .timeout(Duration::from_secs(10))
     .run()?;
-
-// Check success without throwing
-let result = cmd!("cargo", "test").run_no_exit_err()?;
-if result.success() {
-    println!("all tests passed");
-}
 
 // Shared options
 let ops = CmdOps {
@@ -62,12 +62,34 @@ let ops = CmdOps {
     shell: None,            // defaults to ("/bin/sh", "-c")
     verbose: true,          // print commands before running
     dry: false,             // actually run commands
-    no_err: false,          // propagate errors
+    no_err: false,          // errors turn into warnings
     no_warn: false,         // show warnings
 };
-
-cmd!("cargo", "build"; &ops).run()?;
+shell!("cargo test"; &ops).run()?;
 cmd!("cargo", "test"; &ops).run()?;
+
+// Error handling
+let success = match shell!("false").run() {
+    Ok(_result) => true,
+    Err(_e) => false,
+}
+
+// better handling
+match shell!("nonexistent_command").run() {
+    Ok(result) => true,
+    Err(CmdError::NotFound { program }) => {
+        eprintln!("command not found: {program}");
+    }
+    Err(CmdError::CwdNotFound { path }) => {
+        eprintln!("working directory doesn't exist: {path}");
+    }
+    Err(CmdError::Signal { signal }) => {
+        eprintln!("killed by signal {signal}");
+    }
+    Err(e) => {
+        eprintln!("other error: {e}");
+    }
+}
 ```
 
 ## Two Macros
@@ -141,7 +163,7 @@ to the shell as-is, so pipes, redirects, and shell features work normally.
 
 The `shell!` macro supports two inline function calls inside `{...}` placeholders:
 
-- **`{glob("pattern")}`** — Expands a glob pattern at runtime. Matched files are shell-escaped and inserted. If the glob matches nothing or encounters an error, the error is deferred until the command is executed (`.run()?`), keeping the builder chain intact.
+- **`{glob("pattern")}` / `{glob(variable)}`** — Expands a glob pattern at runtime. Accepts a string literal or a variable name. Matched files are shell-escaped and inserted. If the glob matches nothing or encounters an error, the error is deferred until the command is executed (`.run()?`), keeping the builder chain intact.
 
 - **`{flag_if("flag", condition)}`** — Conditionally inserts a flag. If `condition` is `true`, the flag is shell-escaped and inserted; if `false`, nothing is inserted.
 
@@ -194,6 +216,12 @@ let files = glob("src/**/*.rs")?;
 let files = glob("src/**/*.rs")?;
 cmd!("wc", "-l", files).run()?;
 
+// make sure to glob_escape dynamic base paths
+use raxx::glob_esc;
+let dir = "my[project]";
+let pattern = format!("{}/*.rs", glob_esc(dir));
+shell!("cat {glob(pattern)}").run()?;
+
 // Use glob results directly with shell! interpolation
 let files = glob("tests/**/*.rs")?;
 shell!("cat {files}").pipe(cmd!("wc", "-l")).run()?;
@@ -243,7 +271,7 @@ let ops = CmdOps {
     shell: None,            // defaults to ("/bin/sh", "-c")
     verbose: true,          // print commands before running
     dry: false,             // actually run commands
-    no_err: false,          // propagate errors
+    no_err: false,          // errors turn into warnings
     no_warn: false,         // show warnings
 };
 
@@ -390,6 +418,10 @@ shell!("echo err >&2").redirect(Stderr, Null).run()?;
 // Stderr to stdout (merge)
 shell!("echo err >&2").redirect(Stderr, Stdout).run()?;
 
+// Swap stdout and stderr
+let result = shell!("echo out; echo err >&2").swap_streams().run()?;
+// stdout now has "err", stderr now has "out"
+
 // Convenience: quiet() suppresses both
 cmd!("noisy-command").quiet().run()?;
 cmd!("noisy-command").quiet_stdout().run()?;
@@ -529,6 +561,9 @@ cmd!("__nonexistent__").no_err().run()?;  // Ok, prints warning
 // no_nothin: swallow ALL errors silently
 cmd!("__nonexistent__").no_nothin().run()?;  // Ok, no output
 
+// run_and_forget: swallow everything, no ? needed
+let result = cmd!("rm", "maybe.txt").run_and_forget();  // always returns CmdResult
+
 // run_no_exit_err / run_ignore_code: execution shorthands
 let result = cmd!("false").run_no_exit_err()?;
 assert_eq!(result.code, 1);
@@ -544,22 +579,41 @@ assert_eq!(result.code, 42);
 let code = cmd!("false").run_exit_code()?;
 assert_eq!(code, 1);
 
-// Match on error types
+// Match on error types (all variants)
 match cmd!("nonexistent_program").run() {
-    Err(CmdError::NotFound { program }) => {
-        eprintln!("not found: {program}");
-    }
+    Ok(_result) => {}
     Err(CmdError::ExitStatus { code, stderr }) => {
+        // non-zero exit code, stderr is Option<String>
         eprintln!("exited {code}");
+        if let Some(output) = stderr { eprintln!("{output}"); }
     }
-    Err(CmdError::Timeout { duration }) => {
-        eprintln!("timed out after {:?}", duration);
+    Err(CmdError::NotFound { program }) => {
+        eprintln!("command not found: {program}");
     }
     Err(CmdError::CwdNotFound { path }) => {
-        eprintln!("bad cwd: {path}");
+        eprintln!("working directory doesn't exist: {path}");
     }
-    Err(other) => eprintln!("{other}"),
-    Ok(_) => {}
+    Err(CmdError::Timeout { duration }) => {
+        eprintln!("timed out after {:.1}s", duration.as_secs_f64());
+    }
+    Err(CmdError::Signal { signal }) => {
+        eprintln!("killed by signal {signal}");
+    }
+    Err(CmdError::GlobNoMatches { pattern }) => {
+        eprintln!("no files matched: {pattern}");
+    }
+    Err(CmdError::BrokenPipe { upstream_code }) => {
+        eprintln!("pipe broken, upstream exited {upstream_code}");
+    }
+    Err(CmdError::Io(e)) => {
+        eprintln!("io error: {e}");
+    }
+    Err(CmdError::Utf8(e)) => {
+        eprintln!("output not valid utf-8: {e}");
+    }
+    Err(CmdError::Json(e)) => {
+        eprintln!("json parse failed: {e}");
+    }
 }
 ```
 
@@ -801,10 +855,11 @@ The `.run()` method returns `CmdResult<O, E>` with type-safe access to captured 
 | | `.run_out()` | Stdout + stderr concatenated |
 | | `.run_stdout_json::<T>()` | Parse stdout as JSON |
 | | `.run_stderr_json::<T>()` | Parse stderr as JSON |
-| | `.run_exit_code()` | Get exit code, never throws |
-| | `.run_success()` | Returns `bool`, never throws |
+| | `.run_exit_code()` | Just get exit code |
+| | `.run_success()` | Just `bool` if zero exit code |
 | | `.run_no_exit_err()` | Like `.run()` but ignores exit codes |
 | | `.run_ignore_code()` | Alias for `.run_no_exit_err()` |
+| | `.run_and_forget()` | Swallow all errors, returns `CmdResult` (not `Result`) |
 | | `.run_with_tail(title, done, n)` | Spinner + last N lines of stdout |
 | | `.run_with_tail_opts(opts)` | Spinner with full `TailOptions` |
 
