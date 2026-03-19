@@ -6,16 +6,19 @@ use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::{Expr, LitStr, Token};
 
-/// Parsed input for the shell! macro: a format string followed by optional extra args.
+/// Parsed input for the shell! macro: a format string followed by optional extra args,
+/// and an optional `; ops_expr` for shared options.
 struct ShellInput {
     format_str: LitStr,
     extra_args: Vec<Expr>,
+    ops: Option<Expr>,
 }
 
 impl Parse for ShellInput {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let format_str: LitStr = input.parse()?;
         let mut extra_args = Vec::new();
+        let mut ops = None;
         while input.peek(Token![,]) {
             let _: Token![,] = input.parse()?;
             if input.is_empty() {
@@ -23,9 +26,15 @@ impl Parse for ShellInput {
             }
             extra_args.push(input.parse()?);
         }
+        // Check for ; ops
+        if input.peek(Token![;]) {
+            let _: Token![;] = input.parse()?;
+            ops = Some(input.parse()?);
+        }
         Ok(ShellInput {
             format_str,
             extra_args,
+            ops,
         })
     }
 }
@@ -344,6 +353,7 @@ pub fn shell(input: TokenStream) -> TokenStream {
     match parsed {
         Ok(shell_input) => {
             let fmt_value = shell_input.format_str.value();
+            let ops = &shell_input.ops;
 
             // Pre-process: extract {glob("...")} and {flag_if("...", var)} calls
             let inline = extract_inline_calls(&fmt_value);
@@ -352,7 +362,7 @@ pub fn shell(input: TokenStream) -> TokenStream {
                 .filter(|name| !name.starts_with("__raxx_glob_") && !name.starts_with("__raxx_flag_"))
                 .collect();
 
-            if !captures.is_empty() || !inline.globs.is_empty() || !inline.flag_ifs.is_empty() {
+            let base = if !captures.is_empty() || !inline.globs.is_empty() || !inline.flag_ifs.is_empty() {
                 // Interpolation mode (includes inline function calls)
                 generate_interpolation_mode(
                     &shell_input.format_str,
@@ -372,6 +382,17 @@ pub fn shell(input: TokenStream) -> TokenStream {
                     ::raxx::Cmd::shell(#s)
                 }
                 .into()
+            };
+
+            // Wrap with .with_ops() if ops were provided
+            if let Some(ops_expr) = ops {
+                let base2: TokenStream2 = base.into();
+                quote! {
+                    (#base2).with_ops(#ops_expr)
+                }
+                .into()
+            } else {
+                base
             }
         }
         Err(_) => {

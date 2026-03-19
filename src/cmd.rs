@@ -206,6 +206,102 @@ impl<O, T: Into<RedirectTarget>> RedirectFrom<Stderr, T> for Cmd<O, Captured> {
 
 // ── CmdInner ──
 
+/// Reusable options that can be shared across many commands.
+///
+/// Pass as an optional second argument to [`cmd!`] and [`shell!`] via semicolon syntax:
+///
+/// ```no_run
+/// use raxx::{cmd, shell, CmdOps};
+///
+/// let ops = CmdOps::new().cwd("/tmp").verbose(true);
+/// cmd!("ls"; &ops).run().ok();
+/// shell!("echo hello"; &ops).run().ok();
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct CmdOps {
+    env: HashMap<String, String>,
+    cwd: Option<PathBuf>,
+    shell: Option<(String, String)>,
+    verbose: bool,
+    dry: bool,
+    no_err: bool,
+    no_warn: bool,
+}
+
+impl CmdOps {
+    /// Create a new empty options set.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the working directory.
+    pub fn cwd<P: AsRef<Path>>(mut self, dir: P) -> Self {
+        self.cwd = Some(dir.as_ref().to_path_buf());
+        self
+    }
+
+    /// Set an environment variable.
+    pub fn env<K: Into<String>, V: Into<String>>(mut self, key: K, val: V) -> Self {
+        self.env.insert(key.into(), val.into());
+        self
+    }
+
+    /// Set multiple environment variables.
+    pub fn envs<I, K, V>(mut self, vars: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        for (k, v) in vars {
+            self.env.insert(k.into(), v.into());
+        }
+        self
+    }
+
+    /// Set the shell used by [`shell!`](crate::shell!) and [`Cmd::shell`].
+    ///
+    /// The first argument is the shell program, the second is the flag that
+    /// tells it to execute a command string (typically `"-c"`).
+    ///
+    /// Defaults to `("/bin/sh", "-c")` when unset.
+    ///
+    /// ```no_run
+    /// use raxx::{shell, CmdOps};
+    ///
+    /// let ops = CmdOps::new().shell_program("/bin/bash", "-c");
+    /// shell!("echo $BASH_VERSION"; &ops).run().ok();
+    /// ```
+    pub fn shell_program<S1: Into<String>, S2: Into<String>>(mut self, program: S1, flag: S2) -> Self {
+        self.shell = Some((program.into(), flag.into()));
+        self
+    }
+
+    /// Print the command before executing.
+    pub fn verbose(mut self, on: bool) -> Self {
+        self.verbose = on;
+        self
+    }
+
+    /// Only print the command, don't actually run it.
+    pub fn dry(mut self, on: bool) -> Self {
+        self.dry = on;
+        self
+    }
+
+    /// Swallow all errors (print warnings for serious ones).
+    pub fn no_err(mut self, on: bool) -> Self {
+        self.no_err = on;
+        self
+    }
+
+    /// Swallow all errors silently (no warnings).
+    pub fn no_warn(mut self, on: bool) -> Self {
+        self.no_warn = on;
+        self
+    }
+}
+
 /// Internal command state. All fields live here; `Cmd<O, E>` is a thin wrapper.
 #[derive(Debug, Clone)]
 pub(crate) struct CmdInner {
@@ -223,6 +319,14 @@ pub(crate) struct CmdInner {
     pub(crate) pipeline: Option<Pipeline>,
     /// Stored error from builder methods like `.glob()`, returned at execution time.
     pub(crate) deferred_error: Option<String>,
+    /// Swallow all errors (not just exit codes).
+    pub(crate) no_err: bool,
+    /// Suppress warnings printed when no_err swallows an error.
+    pub(crate) no_warn: bool,
+    /// Print command before executing.
+    pub(crate) verbose: bool,
+    /// Print command but don't execute.
+    pub(crate) dry: bool,
 }
 
 impl CmdInner {
@@ -241,6 +345,10 @@ impl CmdInner {
             timeout: None,
             pipeline: None,
             deferred_error: None,
+            no_err: false,
+            no_warn: false,
+            verbose: false,
+            dry: false,
         }
     }
 
@@ -696,7 +804,26 @@ impl<O, E> Cmd<O, E> {
 
     // ── Behavior ──
 
-    /// Don't return an error on non-zero exit codes.
+    /// Swallow **all** errors: exit-code errors, command-not-found, permission
+    /// errors, IO errors, timeouts, etc.  Serious errors (not-found, permission)
+    /// print a warning to stderr.  Use [`.no_nothin()`](Cmd::no_nothin) to
+    /// silence those warnings too.
+    pub fn no_err(mut self) -> Self {
+        self.inner.no_err = true;
+        self
+    }
+
+    /// Like [`.no_err()`](Cmd::no_err) but also silences the warnings.
+    pub fn no_nothin(mut self) -> Self {
+        self.inner.no_err = true;
+        self.inner.no_warn = true;
+        self
+    }
+
+    /// Don't error on non-zero exit codes (but still errors on IO/not-found/etc).
+    ///
+    /// Prefer [`.no_err()`](Cmd::no_err) to swallow all errors, or
+    /// [`.run_no_throw()`](Cmd::run_no_throw) as an execution shorthand.
     pub fn no_throw(mut self) -> Self {
         self.inner.throw = ThrowBehavior::NoThrow;
         self
@@ -705,6 +832,38 @@ impl<O, E> Cmd<O, E> {
     /// Don't error for specific exit codes.
     pub fn no_throw_on(mut self, codes: &[i32]) -> Self {
         self.inner.throw = ThrowBehavior::NoThrowOn(codes.to_vec());
+        self
+    }
+
+    /// Apply a shared [`CmdOps`] configuration to this command.
+    pub fn with_ops(mut self, ops: &CmdOps) -> Self {
+        for (k, v) in &ops.env {
+            self.inner.env_vars.insert(k.clone(), v.clone());
+        }
+        if let Some(ref cwd) = ops.cwd {
+            self.inner.cwd = Some(cwd.clone());
+        }
+        // Replace shell program if this is a shell command (program=/bin/sh, args[0]=-c)
+        if let Some((ref shell_prog, ref shell_flag)) = ops.shell {
+            if self.inner.program == "/bin/sh"
+                && self.inner.args.first().map(|s| s.as_str()) == Some("-c")
+            {
+                self.inner.program = shell_prog.clone();
+                self.inner.args[0] = shell_flag.clone();
+            }
+        }
+        if ops.verbose {
+            self.inner.verbose = true;
+        }
+        if ops.dry {
+            self.inner.dry = true;
+        }
+        if ops.no_err {
+            self.inner.no_err = true;
+        }
+        if ops.no_warn {
+            self.inner.no_warn = true;
+        }
         self
     }
 
@@ -818,7 +977,29 @@ impl<O, E> Cmd<O, E> {
 
     // ── Execution ──
 
-    fn execute_to_raw(mut self) -> Result<RawOutput> {
+    fn execute_to_raw(self) -> Result<RawOutput> {
+        let no_err = self.inner.no_err;
+        let no_warn = self.inner.no_warn;
+
+        let result = self.execute_to_raw_inner();
+
+        match result {
+            Ok(raw) => Ok(raw),
+            Err(e) if no_err => {
+                if !no_warn {
+                    eprintln!("[raxx warning] {}", e);
+                }
+                Ok(RawOutput {
+                    code: -1,
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                })
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn execute_to_raw_inner(mut self) -> Result<RawOutput> {
         // Check for deferred errors (e.g. from .glob() or shell! glob interpolation)
         if let Some(ref err_msg) = self.inner.deferred_error {
             return Err(CmdError::Io(std::io::Error::new(
@@ -826,6 +1007,19 @@ impl<O, E> Cmd<O, E> {
                 err_msg.clone(),
             )));
         }
+
+        // Verbose / dry mode
+        if self.inner.verbose || self.inner.dry {
+            eprintln!("$ {}", self.inner.display_string());
+        }
+        if self.inner.dry {
+            return Ok(RawOutput {
+                code: 0,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            });
+        }
+
         if let Some(pipeline) = self.inner.pipeline.take() {
             let capture_stdout =
                 matches!(self.inner.stdout, OutputConfig::Inherit | OutputConfig::Capture);
@@ -878,6 +1072,22 @@ impl<O, E> Cmd<O, E> {
         self.inner.throw = ThrowBehavior::NoThrow;
         let raw = self.execute_to_raw()?;
         Ok(raw.code == 0)
+    }
+
+    /// Execute the command, ignoring non-zero exit codes.
+    ///
+    /// Unlike [`.no_err()`](Cmd::no_err), this only suppresses exit-code errors.
+    /// IO errors, command-not-found, etc. still propagate.
+    pub fn run_no_throw(mut self) -> Result<CmdResult<O, E>> {
+        self.inner.throw = ThrowBehavior::NoThrow;
+        let raw = self.execute_to_raw()?;
+        Ok(CmdResult::from_raw(raw))
+    }
+
+    /// Execute the command, ignoring non-zero exit codes.
+    /// Alias for [`.run_no_throw()`](Cmd::run_no_throw).
+    pub fn run_ignore_code(self) -> Result<CmdResult<O, E>> {
+        self.run_no_throw()
     }
 }
 

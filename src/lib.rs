@@ -95,7 +95,7 @@ mod pipeline;
 mod result;
 mod tail;
 
-pub use cmd::{Append, Cmd, Null, RedirectFrom, Stderr, Stdout, TimeoutConfig};
+pub use cmd::{Append, Cmd, CmdOps, Null, RedirectFrom, Stderr, Stdout, TimeoutConfig};
 pub use error::{CmdError, Result};
 pub use glob_util::glob;
 pub use result::{Captured, CmdResult, Redirected};
@@ -204,6 +204,11 @@ impl<T: AsRef<std::ffi::OsStr>, const N: usize> IntoArgs for &[T; N] {
 /// ```
 #[macro_export]
 macro_rules! cmd {
+    // With ops: cmd!("echo", "hi"; &ops)
+    ($cmd:expr $(, $arg:expr)* ; $ops:expr) => {
+        $crate::Cmd::new($cmd)$(.push_args($arg))*.with_ops($ops)
+    };
+    // Without ops (existing)
     ($cmd:expr $(, $arg:expr)* $(,)?) => {
         $crate::Cmd::new($cmd)$(.push_args($arg))*
     };

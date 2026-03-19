@@ -12,43 +12,56 @@ raxx = "0.1"
 ```
 
 ```rust
-use raxx::{cmd, shell};
+use raxx::{cmd, shell, CmdOps, Stdout, Null};
 use std::time::Duration;
 
 fn main() -> raxx::Result<()> {
-    // Interpolation with auto-escaping — safe even with spaces/quotes/semicolons
-    let name = "world'n";
-    let text = shell!("echo hello {name} | tr a-z A-Z").text()?;
-    assert_eq!(text, "HELLO WORLD");
-
-    // Vectors interpolate too — each element escaped, joined with spaces
-    let files = vec!["file one.txt", "file two.txt"];
-    shell!("cat {files} | wc -l").run()?;
-
-    // Forward a slice of argv into a command, with fallback on failure
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let text = shell!("grep -r {args} src/")
-        .or(cmd!("echo", "no matches"))
+    let name = "escape'd arg";
+    let text = shell!("echo hello {name} | tr a-z A-Z")
         .pipe(cmd!("head", "-5"))
-        .text()?;
-
-    // Check success without throwing
-    let output = cmd!("cargo", "test").no_throw().output()?;
-    if output.success() {
-        println!("all tests passed");
-    }
-
-    // Spinner with live tail of last 5 stdout lines
-    cmd!("cargo", "build")
-        .run_with_tail("Building...", "Build complete", 5)?;
-
-    // Timeout: sends SIGTERM, then SIGKILL after 5s grace period
-    cmd!("sleep", "60")
-        .timeout(Duration::from_secs(10))
-        .run()?;
-
+        .run_stdout()?;
     Ok(())
 }
+```
+
+## Feature Overview
+
+```rust
+// Vector arg (gets flattened into separate args, each are escaped)
+let files = vec!["file one.txt", "file two.txt"];
+shell!("cat {files} | wc -l").run()?;
+    
+// globbing
+shell!(r#"wc -l {glob("src/**/*.rs")}"#).run()?;
+
+// scrolling 5 lines of stdout (show progress without flooding the terminal)
+cmd!("cargo", "build")
+    .run_with_tail("Building...", "Build complete", 5)?;
+
+// chaining, piping
+let text = shell!("grep -r {args} src/")
+    .or(cmd!("echo", "no matches"))
+    .pipe(cmd!("head", "-5"))
+    .run_stdout()?;
+
+// Timeout: sends SIGTERM, then SIGKILL after 5s grace period
+cmd!("sleep", "60")
+    .timeout(Duration::from_secs(10))
+    .run()?;
+
+// Check success without throwing
+let result = cmd!("cargo", "test").run_no_throw()?;
+if result.success() {
+    println!("all tests passed");
+}
+
+// Shared options
+let ops = CmdOps::new()
+    .cwd("/my/project")
+    .verbose(true);
+
+cmd!("cargo", "build"; &ops).run()?;
+cmd!("cargo", "test"; &ops).run()?;
 ```
 
 ## Two Macros
@@ -92,8 +105,8 @@ shell-escaped before insertion, preventing injection attacks:
 use raxx::shell;
 
 let name = "hello world";
-let text = shell!("echo {name} | tr a-z A-Z").text()?;
-assert_eq!(text, "HELLO WORLD");
+let text = shell!("echo {name} | tr a-z A-Z").run_stdout()?;
+assert_eq!(text.trim(), "HELLO WORLD");
 // Executes: /bin/sh -c "echo 'hello world' | tr a-z A-Z"
 
 // Multiple variables
@@ -196,38 +209,173 @@ shell!("cat {files}").pipe(cmd!("wc", "-l")).run()?;
 let text = Cmd::new("echo")
     .arg("hello")
     .glob("people/*")
-    .text()?;
+    .run_stdout()?;
 ```
+
+## Shared Options (`CmdOps`)
+
+When you're running many commands with the same working directory, environment, or debug settings, create a `CmdOps` and pass it to `cmd!` or `shell!` with a semicolon:
+
+```rust
+use raxx::{cmd, shell, CmdOps};
+
+// Create shared options
+let ops = CmdOps::new()
+    .cwd("/my/project")
+    .env("RUST_LOG", "debug")
+    .verbose(true);   // prints each command before running
+
+// Use with cmd! and shell! — semicolon separates args from ops
+cmd!("cargo", "build"; &ops).run()?;
+cmd!("cargo", "test"; &ops).run()?;
+shell!("echo $RUST_LOG"; &ops).run()?;
+
+// Works with all cmd! features (args, vecs, etc.)
+let extra_flags = vec!["--release", "--all-targets"];
+cmd!("cargo", "build", extra_flags; &ops).run()?;
+```
+
+### Overriding and Updating
+
+`CmdOps` is a regular struct with builder methods, so you can derive new configs from existing ones:
+
+```rust
+use raxx::{cmd, CmdOps};
+
+// Base config for the project
+let base = CmdOps::new()
+    .cwd("/my/project")
+    .env("RUST_LOG", "info");
+
+// Override for debugging — clone and extend
+let debug = base.clone()
+    .verbose(true)
+    .env("RUST_LOG", "trace");
+
+// Override for CI — quiet and non-failing
+let ci = base.clone()
+    .no_err(true)
+    .no_warn(true);
+
+// Per-command overrides still work alongside ops
+cmd!("cargo", "test"; &base)
+    .env("EXTRA", "val")      // adds to the ops env
+    .cwd("/override/path")    // overrides the ops cwd
+    .run()?;
+```
+
+### Custom Shell
+
+By default, `shell!` uses `/bin/sh -c`. Override it via `.shell_program()`:
+
+```rust
+use raxx::{shell, CmdOps};
+
+// Use bash for all shell! commands
+let ops = CmdOps::new().shell_program("/bin/bash", "-c");
+shell!("echo $BASH_VERSION"; &ops).run()?;
+
+// Use zsh
+let zsh = CmdOps::new().shell_program("/bin/zsh", "-c");
+shell!("echo $ZSH_VERSION"; &zsh).run()?;
+
+// Combine with other options
+let ops = CmdOps::new()
+    .shell_program("/bin/bash", "-c")
+    .cwd("/my/project")
+    .verbose(true);
+shell!("echo hello"; &ops).run()?;
+```
+
+This only affects shell commands (`shell!` and `Cmd::shell`). Regular `cmd!` calls are not changed.
+
+### Dry Run Mode
+
+Print commands without running them — great for debugging scripts:
+
+```rust
+use raxx::{cmd, shell, CmdOps};
+
+let dry = CmdOps::new().dry(true);
+
+// These print "$ echo hello" and "$ cargo build" to stderr
+// but don't actually execute
+cmd!("echo", "hello"; &dry).run()?;
+cmd!("cargo", "build", "--release"; &dry).run()?;
+shell!("echo hello | wc -c"; &dry).run()?;
+```
+
+### Available Options
+
+| Method | Description |
+|---|---|
+| `.cwd(path)` | Set working directory |
+| `.env(key, val)` | Set an environment variable |
+| `.envs(pairs)` | Set multiple environment variables |
+| `.shell_program(prog, flag)` | Override the shell for `shell!` (default: `/bin/sh`, `-c`) |
+| `.verbose(true)` | Print `$ command` to stderr before running |
+| `.dry(true)` | Print command but don't run (returns empty `Ok`) |
+| `.no_err(true)` | Swallow all errors (prints warnings) |
+| `.no_warn(true)` | Swallow all errors silently |
 
 ## Capturing Output
 
 ```rust
 use raxx::cmd;
 
-// Trimmed string
-let text = cmd!("echo", "hello").text()?;
+// Stdout as string (untrimmed)
+let text = cmd!("echo", "hello").run_stdout()?;
 
-// Lines as Vec<String>
-let lines = cmd!("echo", "a\nb\nc").lines()?;
+// Full result with both streams
+let result = cmd!("echo", "hello").run()?;
+println!("code: {}", result.code);
+println!("stdout: {}", result.stdout_trimmed());
+println!("stderr: {}", result.stderr_trimmed());
 
-// Raw bytes
-let bytes = cmd!("echo", "hello").bytes()?;
-
-// Parse as JSON (requires the value to implement serde::Deserialize)
-let val: serde_json::Value = cmd!("echo", r#"{"key": "value"}"#).json()?;
+// Lines, bytes, JSON
+let lines = result.stdout_lines();
+let bytes = result.stdout_bytes();
+let val: serde_json::Value = cmd!("echo", r#"{"key": "value"}"#)
+    .run()?.stdout_json()?;
 
 // Exit code without throwing
-let code = cmd!("false").status_code()?;
+let code = cmd!("false").run_exit_code()?;
 assert_eq!(code, 1);
+```
 
-// Full output with both streams
-let output = cmd!("echo", "hello")
-    .stdout_capture()
-    .stderr_capture()
-    .output()?;
-println!("code: {}", output.code);
-println!("stdout: {}", output.stdout_text()?);
-println!("stderr: {}", output.stderr_text()?);
+## IO Redirection
+
+Use `.redirect(Source, Target)` for type-safe stream redirection:
+
+```rust
+use raxx::{cmd, shell, Stdout, Stderr, Null, Append};
+
+// Stdout to file
+cmd!("echo", "hello").redirect(Stdout, "output.txt").run()?;
+
+// Append to file
+cmd!("echo", "more").redirect(Stdout, Append("output.txt")).run()?;
+
+// Discard stdout
+cmd!("echo", "quiet").redirect(Stdout, Null).run()?;
+
+// Stderr to /dev/null
+shell!("echo err >&2").redirect(Stderr, Null).run()?;
+
+// Stderr to stdout (merge)
+shell!("echo err >&2").redirect(Stderr, Stdout).run()?;
+
+// Convenience: quiet() suppresses both
+cmd!("noisy-command").quiet().run()?;
+cmd!("noisy-command").quiet_stdout().run()?;
+cmd!("noisy-command").quiet_stderr().run()?;
+```
+
+Accessing a redirected stream is a **compile error**:
+
+```rust,compile_fail
+// This won't compile — stdout was redirected to a file
+cmd!("echo", "hi").redirect(Stdout, "f.txt").run()?.stdout();
 ```
 
 ## Piping
@@ -239,15 +387,15 @@ use raxx::cmd;
 
 let text = cmd!("echo", "hello world")
     .pipe(cmd!("tr", "a-z", "A-Z"))
-    .text()?;
-assert_eq!(text, "HELLO WORLD");
+    .run_stdout()?;
+assert_eq!(text.trim(), "HELLO WORLD");
 
 // Multi-stage pipelines
 let text = cmd!("echo", "3\n1\n2")
     .pipe(cmd!("sort"))
     .pipe(cmd!("head", "-n", "1"))
-    .text()?;
-assert_eq!(text, "1");
+    .run_stdout()?;
+assert_eq!(text.trim(), "1");
 ```
 
 ## Chaining
@@ -263,8 +411,8 @@ cmd!("true").and(cmd!("echo", "success")).run()?;
 // || — run second only if first fails
 let text = cmd!("false")
     .or(cmd!("echo", "fallback"))
-    .text()?;
-assert_eq!(text, "fallback");
+    .run_stdout()?;
+assert_eq!(text.trim(), "fallback");
 
 // ; — run second regardless
 cmd!("false")
@@ -275,8 +423,8 @@ cmd!("false")
 let text = cmd!("false")
     .and(cmd!("echo", "a"))
     .or(cmd!("echo", "b"))
-    .text()?;
-assert_eq!(text, "b");
+    .run_stdout()?;
+assert_eq!(text.trim(), "b");
 ```
 
 ## Environment Variables
@@ -324,72 +472,21 @@ An error is returned if the directory does not exist.
 use raxx::cmd;
 
 // From a string
-let text = cmd!("cat").stdin_text("hello").text()?;
+let text = cmd!("cat").stdin_text("hello").run_stdout()?;
 
 // From bytes
-let text = cmd!("cat").stdin_bytes(b"hello".to_vec()).text()?;
+let text = cmd!("cat").stdin_bytes(b"hello".to_vec()).run_stdout()?;
 
 // From a file
-let text = cmd!("cat").stdin_path("input.txt").text()?;
+let text = cmd!("cat").stdin_path("input.txt").run_stdout()?;
 
 // No stdin (/dev/null)
 cmd!("cat").stdin_null().run()?;
 ```
 
-## Stdout Redirection
-
-```rust
-use raxx::cmd;
-
-// Write to a file (overwrite)
-cmd!("echo", "hello").stdout_path("output.txt").run()?;
-
-// Append to a file
-cmd!("echo", "more").stdout_append("output.txt").run()?;
-
-// Discard
-cmd!("echo", "quiet").stdout_null().run()?;
-
-// Redirect stdout to stderr
-cmd!("echo", "to stderr").stdout_to_stderr().run()?;
-
-// Capture into memory (used internally by .text(), .bytes(), etc.)
-let output = cmd!("echo", "hello").stdout_capture().output()?;
-assert_eq!(output.stdout_text()?, "hello");
-```
-
-## Stderr Redirection
-
-```rust
-use raxx::{cmd, shell};
-
-// Write to a file
-shell!("echo err >&2").stderr_path("errors.txt").run()?;
-
-// Append
-shell!("echo err >&2").stderr_append("errors.txt").run()?;
-
-// Discard
-shell!("echo err >&2").stderr_null().run()?;
-
-// Merge stderr into stdout
-let output = shell!("echo out; echo err >&2")
-    .stderr_to_stdout()
-    .stdout_capture()
-    .output()?;
-let text = output.stdout_text()?;
-assert!(text.contains("out") && text.contains("err"));
-
-// Capture stderr
-let output = shell!("echo err >&2")
-    .stderr_capture()
-    .output()?;
-assert_eq!(output.stderr_text()?, "err");
-```
-
 ## Error Handling
 
-By default, commands throw `CmdError::ExitStatus` on non-zero exit codes.
+By default, commands return `Err` on non-zero exit codes.
 
 ```rust
 use raxx::{cmd, shell, CmdError};
@@ -397,16 +494,29 @@ use raxx::{cmd, shell, CmdError};
 // Default: error on non-zero
 let err = cmd!("false").run().unwrap_err();
 
-// Suppress all non-zero errors
-let output = cmd!("false").no_throw().output()?;
-assert_eq!(output.code, 1);
+// no_throw: suppress exit-code errors only
+let result = cmd!("false").no_throw().run()?;
+assert_eq!(result.code, 1);
 
-// Suppress specific exit codes
-let output = shell!("exit 42").no_throw_on(&[42]).output()?;
-assert_eq!(output.code, 42);
+// no_err: swallow ALL errors (prints warnings for serious ones)
+cmd!("__nonexistent__").no_err().run()?;  // Ok, prints warning
+
+// no_nothin: swallow ALL errors silently
+cmd!("__nonexistent__").no_nothin().run()?;  // Ok, no output
+
+// run_no_throw / run_ignore_code: execution shorthands
+let result = cmd!("false").run_no_throw()?;
+assert_eq!(result.code, 1);
+
+let result = cmd!("false").run_ignore_code()?;
+assert_eq!(result.code, 1);
+
+// Suppress specific exit codes only
+let result = shell!("exit 42").no_throw_on(&[42]).run()?;
+assert_eq!(result.code, 42);
 
 // Just get the exit code (never throws)
-let code = cmd!("false").status_code()?;
+let code = cmd!("false").run_exit_code()?;
 assert_eq!(code, 1);
 
 // Match on error types
@@ -424,7 +534,7 @@ match cmd!("nonexistent_program").run() {
         eprintln!("bad cwd: {path}");
     }
     Err(other) => eprintln!("{other}"),
-    Ok(()) => {}
+    Ok(_) => {}
 }
 ```
 
@@ -457,18 +567,6 @@ cmd!("my-server")
 cmd!("runaway-process")
     .timeout_signal(Duration::from_secs(2), libc::SIGKILL, None)
     .run()?;
-```
-
-## Quiet Mode
-
-Suppress output without capturing it.
-
-```rust
-use raxx::cmd;
-
-cmd!("echo", "shh").quiet().run()?;           // suppress both
-cmd!("echo", "shh").quiet_stdout().run()?;     // suppress stdout only
-cmd!("echo", "shh").quiet_stderr().run()?;     // suppress stderr only
 ```
 
 ## Spinner with Tail (`run_with_tail`)
@@ -519,13 +617,13 @@ use raxx::Cmd;
 let text = Cmd::new("echo")
     .arg("hello")
     .arg("world")
-    .text()?;
+    .run_stdout()?;
 
 let text = Cmd::parse("grep -rn")
     .arg("pattern")
     .arg("src/")
     .cwd("/my/project")
-    .text()?;
+    .run_stdout()?;
 ```
 
 ## Argument Escaping
@@ -541,24 +639,25 @@ assert_eq!(escape_arg(""), "''");
 assert_eq!(escape_arg("it's"), "'it'\"'\"'s'");
 ```
 
-## CmdOutput
+## CmdResult
 
-The `.output()` method returns a `CmdOutput` struct with full access to exit code and captured streams.
+The `.run()` method returns `CmdResult<O, E>` with type-safe access to captured streams. If a stream was redirected, its accessors are unavailable at **compile time**.
 
-| Method | Returns |
-|---|---|
-| `output.code` | `i32` — exit code |
-| `output.stdout` | `Vec<u8>` — raw stdout bytes |
-| `output.stderr` | `Vec<u8>` — raw stderr bytes |
-| `output.stdout_text()` | `Result<String>` — trimmed |
-| `output.stderr_text()` | `Result<String>` — trimmed |
-| `output.stdout_text_raw()` | `Result<String>` — not trimmed |
-| `output.stderr_text_raw()` | `Result<String>` — not trimmed |
-| `output.stdout_json::<T>()` | `Result<T>` — JSON parse |
-| `output.stderr_json::<T>()` | `Result<T>` — JSON parse |
-| `output.stdout_lines()` | `Result<Vec<String>>` |
-| `output.stderr_lines()` | `Result<Vec<String>>` |
-| `output.success()` | `bool` — true if code == 0 |
+| Method | Available when | Returns |
+|---|---|---|
+| `result.code` | always | `i32` — exit code |
+| `result.success()` | always | `bool` — true if code == 0 |
+| `result.stdout()` | stdout captured | `String` (untrimmed) |
+| `result.stdout_trimmed()` | stdout captured | `String` |
+| `result.stdout_bytes()` | stdout captured | `&[u8]` |
+| `result.stdout_lines()` | stdout captured | `Vec<String>` |
+| `result.stdout_json::<T>()` | stdout captured | `Result<T>` |
+| `result.stderr()` | stderr captured | `String` (untrimmed) |
+| `result.stderr_trimmed()` | stderr captured | `String` |
+| `result.stderr_bytes()` | stderr captured | `&[u8]` |
+| `result.stderr_lines()` | stderr captured | `Vec<String>` |
+| `result.stderr_json::<T>()` | stderr captured | `Result<T>` |
+| `result.out()` | both captured | `String` (stdout+stderr) |
 
 ## CmdError
 
@@ -585,8 +684,10 @@ The `.output()` method returns a `CmdOutput` struct with full access to exit cod
 |---|---|
 | `cmd!("prog", arg1, arg2)` | Safe command — no shell, args passed directly |
 | `cmd!("prog", vec)` | Vector elements are flattened into separate args |
+| `cmd!("prog", args; &ops)` | With shared `CmdOps` |
 | `shell!("cmd string")` | Shell command via `/bin/sh -c` |
 | `shell!("cmd", arg1, vec)` | Extra args are shell-escaped and appended |
+| `shell!("cmd"; &ops)` | With shared `CmdOps` |
 | `shell!("... {glob(\"pat\")} ...")` | Inline glob expansion (deferred errors) |
 | `shell!("... {flag_if(\"f\", b)} ...")` | Conditional flag insertion |
 
@@ -617,34 +718,33 @@ The `.output()` method returns a `CmdOutput` struct with full access to exit cod
 | | `.stdin_bytes(bytes)` | Stdin from bytes |
 | | `.stdin_path(path)` | Stdin from file |
 | | `.stdin_null()` | No stdin |
-| **Stdout** | `.stdout_capture()` | Capture to memory |
-| | `.stdout_path(path)` | Write to file |
-| | `.stdout_append(path)` | Append to file |
-| | `.stdout_null()` | Discard |
-| | `.stdout_to_stderr()` | Redirect to stderr |
-| **Stderr** | `.stderr_capture()` | Capture to memory |
-| | `.stderr_path(path)` | Write to file |
-| | `.stderr_append(path)` | Append to file |
-| | `.stderr_null()` | Discard |
-| | `.stderr_to_stdout()` | Redirect to stdout |
-| **Behavior** | `.no_throw()` | Don't error on non-zero exit |
-| | `.no_throw_on(&[codes])` | Don't error for specific codes |
-| | `.quiet()` | Suppress all output |
+| **Redirect** | `.redirect(Stdout, target)` | Redirect stdout to file/Null/Stderr/Append |
+| | `.redirect(Stderr, target)` | Redirect stderr to file/Null/Stdout/Append |
+| | `.quiet()` | Suppress both streams |
 | | `.quiet_stdout()` | Suppress stdout |
 | | `.quiet_stderr()` | Suppress stderr |
+| | `.swap_streams()` | Swap stdout ↔ stderr |
+| **Behavior** | `.no_throw()` | Don't error on non-zero exit codes |
+| | `.no_throw_on(&[codes])` | Don't error for specific codes |
+| | `.no_err()` | Swallow all errors (warn on serious) |
+| | `.no_nothin()` | Swallow all errors silently |
 | | `.timeout(duration)` | SIGTERM after duration, SIGKILL after 2s grace |
 | | `.timeout_signal(dur, sig, grace)` | Custom signal and grace period |
+| | `.with_ops(&ops)` | Apply shared `CmdOps` |
 | **Compose** | `.pipe(other)` | Pipe stdout to other's stdin |
 | | `.and(other)` | Run other only on success (`&&`) |
 | | `.or(other)` | Run other only on failure (`\|\|`) |
 | | `.then(other)` | Run other regardless (`;`) |
-| **Execute** | `.run()` | Run, return `Result<()>` |
-| | `.text()` | Capture stdout as trimmed `String` |
-| | `.lines()` | Capture stdout as `Vec<String>` |
-| | `.bytes()` | Capture stdout as `Vec<u8>` |
-| | `.json::<T>()` | Parse stdout as JSON |
-| | `.status_code()` | Get exit code, never throws |
-| | `.output()` | Full `CmdOutput` |
+| **Execute** | `.run()` | Run, return `Result<CmdResult>` |
+| | `.run_stdout()` | Stdout as `String` (untrimmed) |
+| | `.run_stderr()` | Stderr as `String` (untrimmed) |
+| | `.run_out()` | Stdout + stderr concatenated |
+| | `.run_stdout_json::<T>()` | Parse stdout as JSON |
+| | `.run_stderr_json::<T>()` | Parse stderr as JSON |
+| | `.run_exit_code()` | Get exit code, never throws |
+| | `.run_success()` | Returns `bool`, never throws |
+| | `.run_no_throw()` | Like `.run()` but ignores exit codes |
+| | `.run_ignore_code()` | Alias for `.run_no_throw()` |
 | | `.run_with_tail(title, done, n)` | Spinner + last N lines of stdout |
 | | `.run_with_tail_opts(opts)` | Spinner with full `TailOptions` |
 

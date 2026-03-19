@@ -1,4 +1,4 @@
-use raxx::{cmd, glob, shell, Cmd, CmdError, TailOptions, Stdout, Stderr, Append};
+use raxx::{cmd, glob, shell, Cmd, CmdError, CmdOps, TailOptions, Stdout, Stderr, Append};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -2446,5 +2446,175 @@ fn test_shell_flag_if_with_interpolation() {
         .stdout_trimmed();
     assert!(text.contains("hello"));
     assert!(text.contains("--loud"));
+}
+
+// ============================================================================
+// no_err / no_nothin
+// ============================================================================
+
+#[test]
+fn test_no_err_swallows_not_found() {
+    let result = cmd!("__nonexistent_command_xyz__").no_err().run();
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().code, -1);
+}
+
+#[test]
+fn test_no_err_swallows_exit_code() {
+    let result = cmd!("false").no_err().run();
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_no_err_swallows_cwd_not_found() {
+    let result = cmd!("echo", "hi").cwd("/nonexistent_dir_xyz_99").no_err().run();
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().code, -1);
+}
+
+#[test]
+fn test_no_nothin_swallows_silently() {
+    // Should not print anything — just swallow
+    let result = cmd!("__nonexistent_command_xyz__").no_nothin().run();
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().code, -1);
+}
+
+#[test]
+fn test_no_err_with_deferred_error() {
+    let result = cmd!("echo").glob("/nonexistent_xyz_99/*.txt").no_err().run();
+    assert!(result.is_ok());
+}
+
+// ============================================================================
+// run_no_throw / run_ignore_code
+// ============================================================================
+
+#[test]
+fn test_run_no_throw() {
+    let result = cmd!("false").run_no_throw();
+    assert!(result.is_ok());
+    let r = result.unwrap();
+    assert_eq!(r.code, 1);
+    assert!(!r.success());
+}
+
+#[test]
+fn test_run_no_throw_still_errors_on_not_found() {
+    let result = cmd!("__nonexistent_xyz__").run_no_throw();
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_run_ignore_code() {
+    let result = cmd!("false").run_ignore_code();
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().code, 1);
+}
+
+#[test]
+fn test_run_ignore_code_success() {
+    let result = cmd!("true").run_ignore_code();
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().code, 0);
+}
+
+// ============================================================================
+// CmdOps
+// ============================================================================
+
+#[test]
+fn test_cmd_ops_env() {
+    let ops = CmdOps::new().env("MY_TEST_OP", "hello_ops");
+    let text = cmd!("sh", "-c", "echo $MY_TEST_OP"; &ops).run_stdout().unwrap();
+    assert_eq!(text.trim(), "hello_ops");
+}
+
+#[test]
+fn test_cmd_ops_cwd() {
+    let dir = TempDir::new().unwrap();
+    let ops = CmdOps::new().cwd(dir.path());
+    let text = cmd!("pwd"; &ops).run_stdout().unwrap();
+    // Resolve symlinks for macOS /private/var/... vs /var/...
+    let expected = std::fs::canonicalize(dir.path()).unwrap();
+    let actual = std::fs::canonicalize(text.trim()).unwrap();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn test_cmd_ops_dry() {
+    let ops = CmdOps::new().dry(true);
+    let result = cmd!("echo", "should not run"; &ops).run().unwrap();
+    // Dry mode returns code 0 and empty output
+    assert_eq!(result.code, 0);
+    assert_eq!(result.stdout_trimmed(), "");
+}
+
+#[test]
+fn test_cmd_ops_no_err() {
+    let ops = CmdOps::new().no_err(true).no_warn(true);
+    let result = cmd!("__nonexistent_xyz__"; &ops).run();
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_cmd_ops_reuse() {
+    let ops = CmdOps::new().env("SHARED_VAR", "shared_val");
+    let t1 = cmd!("sh", "-c", "echo $SHARED_VAR"; &ops).run_stdout().unwrap();
+    let t2 = cmd!("sh", "-c", "echo $SHARED_VAR"; &ops).run_stdout().unwrap();
+    assert_eq!(t1.trim(), "shared_val");
+    assert_eq!(t2.trim(), "shared_val");
+}
+
+#[test]
+fn test_shell_ops() {
+    let ops = CmdOps::new().env("SHELL_OP_VAR", "works");
+    let text = shell!("echo $SHELL_OP_VAR"; &ops).run_stdout().unwrap();
+    assert_eq!(text.trim(), "works");
+}
+
+#[test]
+fn test_shell_ops_dry() {
+    let ops = CmdOps::new().dry(true);
+    let result = shell!("echo should not run"; &ops).run().unwrap();
+    assert_eq!(result.code, 0);
+    assert_eq!(result.stdout_trimmed(), "");
+}
+
+#[test]
+fn test_cmd_ops_with_args() {
+    let ops = CmdOps::new().env("OPS_X", "42");
+    let text = cmd!("sh", "-c", "echo $OPS_X extra"; &ops).run_stdout().unwrap();
+    assert_eq!(text.trim(), "42 extra");
+}
+
+#[test]
+fn test_cmd_ops_shell_program() {
+    let ops = CmdOps::new().shell_program("/bin/bash", "-c");
+    let text = shell!("echo hello from bash"; &ops).run_stdout().unwrap();
+    assert_eq!(text.trim(), "hello from bash");
+}
+
+#[test]
+fn test_cmd_ops_shell_program_with_cmd_shell() {
+    let ops = CmdOps::new().shell_program("/bin/bash", "-c");
+    let text = raxx::Cmd::shell("echo via Cmd::shell").with_ops(&ops).run_stdout().unwrap();
+    assert_eq!(text.trim(), "via Cmd::shell");
+}
+
+#[test]
+fn test_cmd_ops_shell_program_does_not_affect_cmd() {
+    // shell_program should only affect shell commands, not regular cmd! calls
+    let ops = CmdOps::new().shell_program("/bin/bash", "-c");
+    let text = cmd!("echo", "still works"; &ops).run_stdout().unwrap();
+    assert_eq!(text.trim(), "still works");
+}
+
+#[test]
+fn test_cmd_ops_shell_program_with_interpolation() {
+    let ops = CmdOps::new().shell_program("/bin/bash", "-c");
+    let name = "world";
+    let text = shell!("echo hello {name}"; &ops).run_stdout().unwrap();
+    assert_eq!(text.trim(), "hello world");
 }
 
