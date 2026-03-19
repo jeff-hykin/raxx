@@ -18,27 +18,27 @@
 //! use raxx::{cmd, shell, Stdout, Stderr, Null, Append};
 //!
 //! # fn main() -> raxx::Result<()> {
-//! // Run a command (auto-captures stdout and stderr)
-//! let result = cmd!("echo", "hello world").run()?;
+//! // Run a command (output goes to terminal by default)
+//! cmd!("echo", "hello world").run()?;
 //!
-//! // Get stdout
+//! // Capture stdout
 //! let text = cmd!("echo", "hello").run_stdout()?;
 //! assert_eq!(text.trim(), "hello");
 //!
-//! // Shell syntax
-//! let result = shell!("echo hello | tr a-z A-Z").run()?;
+//! // Shell syntax (capture with .capture().run())
+//! let result = shell!("echo hello | tr a-z A-Z").capture().run()?;
 //! assert_eq!(result.stdout_trimmed(), "HELLO");
 //!
 //! // Piping with the builder API
 //! let result = cmd!("echo", "hello")
 //!     .pipe(cmd!("tr", "a-z", "A-Z"))
-//!     .run()?;
+//!     .capture().run()?;
 //! assert_eq!(result.stdout_trimmed(), "HELLO");
 //!
 //! // Chaining (&&, ||, ;)
 //! let result = cmd!("false")
 //!     .or(cmd!("echo", "fallback"))
-//!     .run()?;
+//!     .capture().run()?;
 //! assert_eq!(result.stdout_trimmed(), "fallback");
 //!
 //! // Redirect stdout to a file

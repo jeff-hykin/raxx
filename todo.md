@@ -1,4 +1,6 @@
+- `tee` support for streams
 - get PID
+- streaming output
 - partly detached processes
 - work with futures and signal-sending
 - stop using `/bin/sh` (parse the string 100%)

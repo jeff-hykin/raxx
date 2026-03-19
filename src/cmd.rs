@@ -1126,7 +1126,13 @@ impl<O, E> Cmd<O, E> {
     /// // No ? or unwrap needed
     /// let result = cmd!("rm", "maybe.txt").run_and_forget();
     /// ```
-    pub fn run_and_forget(self) -> CmdResult<O, E> {
+    pub fn run_and_forget(mut self) -> CmdResult<O, E> {
+        if matches!(self.inner.stdout, OutputConfig::Inherit) {
+            self.inner.stdout = OutputConfig::Capture;
+        }
+        if matches!(self.inner.stderr, OutputConfig::Inherit) {
+            self.inner.stderr = OutputConfig::Capture;
+        }
         let result = self.no_err().run();
         // no_err guarantees Ok, but handle defensively
         match result {
@@ -1150,6 +1156,30 @@ impl<E> Cmd<Captured, E> {
     pub fn run_stdout(self) -> Result<String> {
         let result = self.capture_stdout().run()?;
         Ok(result.stdout())
+    }
+
+    /// Execute and return stdout as a trimmed string.
+    ///
+    /// Automatically captures stdout.
+    pub fn run_stdout_trimmed(self) -> Result<String> {
+        let result = self.capture_stdout().run()?;
+        Ok(result.stdout_trimmed())
+    }
+
+    /// Execute and return stdout as raw bytes.
+    ///
+    /// Automatically captures stdout.
+    pub fn run_stdout_bytes(self) -> Result<Vec<u8>> {
+        let result = self.capture_stdout().run()?;
+        Ok(result.stdout_bytes().to_vec())
+    }
+
+    /// Execute and return stdout split into lines.
+    ///
+    /// Automatically captures stdout.
+    pub fn run_stdout_lines(self) -> Result<Vec<String>> {
+        let result = self.capture_stdout().run()?;
+        Ok(result.stdout_lines())
     }
 
     /// Execute and parse stdout as JSON.
@@ -1188,6 +1218,30 @@ impl<O> Cmd<O, Captured> {
         Ok(result.stderr())
     }
 
+    /// Execute and return stderr as a trimmed string.
+    ///
+    /// Automatically captures stderr.
+    pub fn run_stderr_trimmed(self) -> Result<String> {
+        let result = self.capture_stderr().run()?;
+        Ok(result.stderr_trimmed())
+    }
+
+    /// Execute and return stderr as raw bytes.
+    ///
+    /// Automatically captures stderr.
+    pub fn run_stderr_bytes(self) -> Result<Vec<u8>> {
+        let result = self.capture_stderr().run()?;
+        Ok(result.stderr_bytes().to_vec())
+    }
+
+    /// Execute and return stderr split into lines.
+    ///
+    /// Automatically captures stderr.
+    pub fn run_stderr_lines(self) -> Result<Vec<String>> {
+        let result = self.capture_stderr().run()?;
+        Ok(result.stderr_lines())
+    }
+
     /// Execute and parse stderr as JSON.
     ///
     /// Automatically captures stderr.
@@ -1216,6 +1270,13 @@ impl<O> Cmd<O, Captured> {
 // ── Both-captured methods ──
 
 impl Cmd<Captured, Captured> {
+    /// Execute with both streams captured, returning the full result.
+    ///
+    /// Shorthand for `.capture().run()`.
+    pub fn run_capture(self) -> Result<CmdResult<Captured, Captured>> {
+        self.capture().run()
+    }
+
     /// Execute and return stdout + stderr concatenated.
     ///
     /// Automatically captures both streams.

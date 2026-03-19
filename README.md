@@ -373,23 +373,32 @@ shell!("echo hello | wc -c"; &dry).run()?;
 
 ## Capturing Output
 
+By default, stdout and stderr are **forwarded to the terminal** (inherited from the parent process). Use `.run_stdout()`, `.run_out()`, or `.capture()` to capture output into memory.
+
 ```rust
 use raxx::cmd;
 
-// Stdout as string (untrimmed)
+// Output goes to terminal (default)
+cmd!("echo", "hello").run()?;
+
+// Capture stdout as string (auto-captures)
 let text = cmd!("echo", "hello").run_stdout()?;
 
-// Full result with both streams
-let result = cmd!("echo", "hello").run()?;
+// Capture both streams into a CmdResult
+let result = cmd!("echo", "hello").capture().run()?;
 println!("code: {}", result.code);
 println!("stdout: {}", result.stdout_trimmed());
 println!("stderr: {}", result.stderr_trimmed());
 
-// Lines, bytes, JSON
+// Lines, bytes, JSON — all on a captured result
 let lines = result.stdout_lines();
 let bytes = result.stdout_bytes();
-let val: serde_json::Value = cmd!("echo", r#"{"key": "value"}"#)
-    .run()?.stdout_json()?;
+let val: serde_json::Value = cmd!("echo", r#"{"key": "value"}"#).run_stdout_json()?;
+
+// Capture only stdout or only stderr
+let result = cmd!("my-tool").capture_stdout().run()?;
+let text = result.stdout_trimmed();
+// result.stderr() is not available (stderr went to terminal)
 
 // Exit code without throwing
 let code = cmd!("false").run_exit_code()?;
@@ -419,7 +428,7 @@ shell!("echo err >&2").redirect(Stderr, Null).run()?;
 shell!("echo err >&2").redirect(Stderr, Stdout).run()?;
 
 // Swap stdout and stderr
-let result = shell!("echo out; echo err >&2").swap_streams().run()?;
+let result = shell!("echo out; echo err >&2").swap_streams().capture().run()?;
 // stdout now has "err", stderr now has "out"
 
 // Convenience: quiet() suppresses both
@@ -548,37 +557,6 @@ By default, commands return `Err` on non-zero exit codes.
 ```rust
 use raxx::{cmd, shell, CmdError};
 
-// Default: error on non-zero
-let err = cmd!("false").run().unwrap_err();
-
-// no_exit_err: suppress exit-code errors only
-let result = cmd!("false").no_exit_err().run()?;
-assert_eq!(result.code, 1);
-
-// no_err: swallow ALL errors (prints warnings for serious ones)
-cmd!("__nonexistent__").no_err().run()?;  // Ok, prints warning
-
-// no_nothin: swallow ALL errors silently
-cmd!("__nonexistent__").no_nothin().run()?;  // Ok, no output
-
-// run_and_forget: swallow everything, no ? needed
-let result = cmd!("rm", "maybe.txt").run_and_forget();  // always returns CmdResult
-
-// run_no_exit_err / run_ignore_code: execution shorthands
-let result = cmd!("false").run_no_exit_err()?;
-assert_eq!(result.code, 1);
-
-let result = cmd!("false").run_ignore_code()?;
-assert_eq!(result.code, 1);
-
-// Suppress specific exit codes only
-let result = shell!("exit 42").no_exit_err_on(&[42]).run()?;
-assert_eq!(result.code, 42);
-
-// Just get the exit code (never throws)
-let code = cmd!("false").run_exit_code()?;
-assert_eq!(code, 1);
-
 // Match on error types (all variants)
 match cmd!("nonexistent_program").run() {
     Ok(_result) => {}
@@ -615,6 +593,24 @@ match cmd!("nonexistent_program").run() {
         eprintln!("json parse failed: {e}");
     }
 }
+
+// Just get the exit code (non-zero is not an error)
+let code = cmd!("false").run_exit_code()?;
+
+// no_err: prints warnings for serious errors
+cmd!("__nonexistent__").no_err().run()?;  // Ok, prints warning
+let result = cmd!("__nonexistent__").run_and_forget();  // result.code = -1
+
+// no_nothin: no warnings no errors
+cmd!("__nonexistent__").no_nothin().run()?;  // Ok, no output
+
+// run_no_exit_err / run_ignore_code: execution shorthands
+let result = cmd!("false").run_no_exit_err()?;
+assert_eq!(result.code, 1);
+
+// Suppress specific exit codes only
+let result = shell!("exit 42").no_exit_err_on(&[42]).run()?;
+assert_eq!(result.code, 42);
 ```
 
 ## Timeout

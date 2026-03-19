@@ -30,7 +30,7 @@ pub(crate) struct RawOutput {
 /// use raxx::cmd;
 ///
 /// # fn main() -> raxx::Result<()> {
-/// let result = cmd!("echo", "hello").run()?;
+/// let result = cmd!("echo", "hello").capture().run()?;
 /// assert_eq!(result.stdout_trimmed(), "hello");
 /// assert!(result.success());
 /// # Ok(())
