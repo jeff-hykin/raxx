@@ -1,8 +1,6 @@
 # Raxx
 
-A dax-inspired shell scripting library for Rust. Synchronous, Unix-only.
-
-Inspired by [dax](https://github.com/dsherret/dax) for Deno. Provides ergonomic macros and a builder API for running shell commands with safe argument escaping, piping, chaining, IO redirection, environment control, and more.
+Ergonomic macros +  builder API for shell commands. Inspired by [dax](https://github.com/dsherret/dax), synchronous, Unix-only.
 
 ## Quick Start
 
